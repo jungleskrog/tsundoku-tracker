@@ -88,7 +88,14 @@ input {
 .pageform input { width: 4.6em; text-align: center; }
 .fin { color: var(--quiet); font-size: .86rem; margin-top: 8px; min-height: 1.3em; }
 .ledger { margin: 22px 0 6px; padding: 14px 0; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); }
+.ledger p { margin: 0; }
 .ledger .quiet { display: block; font-size: .82rem; }
+.when { margin: 8px 0 0; font-style: italic; color: var(--quiet); font-size: .92rem; }
+ol.shelf li a .d { display: block; }
+select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 2px; padding: 5px 9px; min-height: 36px; }
+fieldset.days { border: 0; padding: 0; margin: 0; display: flex; gap: 14px; flex-wrap: wrap; }
+fieldset.days legend { color: var(--quiet); font-size: .9rem; margin-bottom: 4px; padding: 0; }
+fieldset.days label { display: inline-flex; gap: 4px; align-items: center; color: var(--ink); }
 
 /* Lists */
 ol.shelf, ol.history, ul.snaps, ul.asks { margin: 0; padding: 0; list-style: none; }
@@ -145,3 +152,9 @@ ul.snaps li { padding: 4px 0; font-size: .92rem; display: grid; grid-template-co
   .masthead, .notice, button, form, .actions, details { display: none !important; }
   body { background: #fff; }
 }
+
+/* Settings form details */
+form.stack fieldset.days label { display: inline-flex; flex-direction: row; gap: 6px; align-items: center; font-size: .95rem; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 1.05em; height: 1.05em; min-height: 0; margin: 0; }
+form.stack input[type="number"], details.edit input[type="number"] { max-width: 9em; }
+form.stack select { max-width: 22rem; }

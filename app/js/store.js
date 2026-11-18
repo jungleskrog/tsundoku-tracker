@@ -1,3 +1,5 @@
+import { ulid } from "./ids.js";
+
 // IndexedDB storage. Thin: every write is one transaction; logic lives in domain.js.
 const DB_NAME = "antilibrary";
 const DB_VERSION = 1;
@@ -93,7 +95,7 @@ const KEEP_SNAPSHOTS = 10;
 export async function snapshot(reason, archive) {
   const db = await open();
   const at = new Date().toISOString();
-  const id = `${at}~${Math.random().toString(36).slice(2, 8)}`;
+  const id = `s_${ulid()}`; // time-sortable, strictly increasing
   const tx = db.transaction("snapshots", "readwrite");
   const store = tx.objectStore("snapshots");
   store.put({ id, at, reason, archive });
@@ -105,7 +107,7 @@ export async function snapshot(reason, archive) {
 
 export async function listSnapshots() {
   const list = await all("snapshots");
-  return list.map(s => ({ id: s.id, at: s.at || s.id, reason: s.reason, books: s.archive.books.length, events: s.archive.events.length })).sort((a, b) => (a.id < b.id ? 1 : -1));
+  return list.map(s => ({ id: s.id, at: s.at || s.id, reason: s.reason, books: s.archive.books.length, events: s.archive.events.length })).sort((a, b) => (a.id < b.id ? 1 : -1)); // newest first
 }
 
 export async function getSnapshot(id) {

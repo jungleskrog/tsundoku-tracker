@@ -7,6 +7,7 @@ import {
   validateArchive, mergeArchives, byQueue, byTime,
 } from "./domain.js";
 import { migrate } from "./migrations.js";
+import * as M from "./model.js";
 import { csvObjects, goodreadsRows, isGoodreadsExport } from "./csv.js";
 import { keysBetween, compareKeys } from "./keys.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
@@ -22,7 +23,44 @@ const books = () => [...S.books.values()];
 const evs = id => S.byBook.get(id) || [];
 const archive = () => makeArchive({ books: books(), events: S.events, tombstones: S.tombstones, settings: S.settings }, now());
 
-function reindex() { S.byBook = eventsByBook(S.events); }
+function reindex() { S.byBook = eventsByBook(S.events); S.version = (S.version || 0) + 1; }
+
+/** Everything the model derives, recomputed once per change (and once a day). */
+let derivedCache = null;
+function derived() {
+  const day = localDayKey(now());
+  if (derivedCache && derivedCache.version === S.version && derivedCache.day === day) return derivedCache;
+  const t = new Date();
+  const p = M.params(S.settings);
+  const all = books();
+  const earned = M.earnings(all, S.byBook, p);
+  const firstUse = M.firstUseOf(S.events);
+  const led = M.ledger({ earned, events: S.events, settings: S.settings, now: t, firstUse });
+  const fc = M.forecast({ books: all, byBook: S.byBook, settings: S.settings, now: t, earnedToday: led ? led.todayTokens : 0, earned, firstUse });
+  const spread = M.paceSpread(earned, t, firstUse);
+  const band = M.readingBand(earned, t);
+  const todayPagesBy = new Map();
+  for (const e of earned) if (e.day === day) todayPagesBy.set(e.bookId, (todayPagesBy.get(e.bookId) || 0) + e.pages);
+  derivedCache = { version: S.version, day, p, earned, firstUse, ledger: led, fc, spread, band, todayPagesBy };
+  return derivedCache;
+}
+
+/** "At your current pace…" words for a book, or null. */
+function finishWords(id) {
+  const d = derived(), f = d.fc.get(id);
+  if (!f) return null;
+  if (f.unknown) return { phrase: "Add a page count to see when it finishes.", short: "pages unknown", plain: true };
+  if (f.beyond) return { phrase: "beyond twenty years at this pace", short: "beyond 2046" };
+  if (f.finish == null) return null;
+  return M.when(Math.max(0.01, f.finish), d.spread, new Date(), d.band);
+}
+function startWords(id) {
+  const d = derived(), f = d.fc.get(id);
+  if (!f || f.start == null || f.beyond) return null;
+  if (f.start === 0) return { phrase: "today", short: "today" };
+  return M.when(f.start + 0.5, d.spread, new Date(), null);
+}
+const pagesFromTokens = (id, tokens) => { const f = derived().fc.get(id); return f && f.tpp ? tokens / f.tpp : 0; };
 
 function load({ books: bs, events, tombstones, settings }) {
   S.books = new Map(bs.map(b => [b.id, b]));
@@ -174,6 +212,9 @@ function progressRule(page, pages) {
 
 function deskEntry(b) {
   const e = effective(b), page = currentPage(evs(b.id)), today = pagesToday(b.id);
+  const f = derived().fc.get(b.id) || {};
+  const planned = Math.round(Math.max(0, today) + pagesFromTokens(b.id, f.todayTokens || 0));
+  const fin = finishWords(b.id);
   const undo = [...evs(b.id)].reverse().find(x => x.type === "progress" && x.source === "app");
   const done = e.pages && page >= e.pages;
   return html`<article class="entry">
@@ -181,7 +222,8 @@ function deskEntry(b) {
     <div class="a sc">${[e.author, e.year].filter(Boolean).join(" · ")}</div>
     ${progressRule(page, e.pages)}
     <div class="row">
-      <span class="where">${page ? `page ${page}${e.pages ? ` of ${e.pages}` : ""}` : `not begun${e.pages ? ` · ${e.pages} pages` : ""}`}${today > 0 ? raw(` · <b>${today} today</b>`) : ""}</span>
+      <span class="where">${planned > 0 || today > 0
+        ? raw(`<b>${today > 0 ? `${today} of ${Math.max(planned, today)}` : planned} ${Math.max(planned, today) === 1 ? "page" : "pages"} today</b> · `) : ""}${page ? `page ${page}${e.pages ? ` of ${e.pages}` : ""}` : `not begun${e.pages ? ` · ${e.pages} pages` : ""}`}</span>
       <span class="btns">
         <button data-act="add" data-id="${b.id}" data-n="1" aria-label="Add one page">+1</button>
         <button data-act="add" data-id="${b.id}" data-n="2" aria-label="Add two pages">+2</button>
@@ -192,6 +234,7 @@ function deskEntry(b) {
         </form>
       </span>
     </div>
+    ${fin && !done ? html`<p class="when">${fin.plain ? fin.phrase : `At your current pace, finishes ${fin.phrase}.`}</p>` : ""}
     <div class="fin">
       ${done ? raw(`<button class="link strong" data-act="status" data-id="${esc(b.id)}" data-to="read">Mark as finished</button> · `) : ""}
       ${undo ? raw(`<button class="link" data-act="undo" data-id="${esc(b.id)}">Undo p. ${undo.prevPage} → ${undo.page}</button> <span class="quiet">(${esc(relativeDay(undo.at))})</span>`) : ""}
@@ -199,10 +242,20 @@ function deskEntry(b) {
   </article>`;
 }
 
+function ledgerBlock(reading) {
+  const d = derived(), goal = S.settings.dailyTokens;
+  const today = d.ledger ? d.ledger.todayTokens : 0;
+  const ref = reading.map(b => [b, d.fc.get(b.id)]).filter(([, f]) => f && f.tpp).sort((a, b) => (b[1].share || 0) - (a[1].share || 0))[0];
+  const words = d.ledger ? M.ledgerWords(d.ledger, goal, ref ? effective(ref[0]).title : null, ref ? ref[1].tpp : null) : null;
+  return html`<div class="ledger">
+    <p>${words ? words.text : "The ledger begins with your first entry."}
+      <span class="quiet">${today >= goal ? `Today's ${goal} tokens are read.` : today > 0 ? `Today: ${Math.round(today * 10) / 10} of ${goal} tokens.` : `Today: none of ${goal} tokens yet.`}${d.ledger ? (d.ledger.days < 28 ? ` Counted since ${shortDate(d.firstUse)}.` : " Counted over the last 28 days.") : ""}</span></p>
+  </div>`;
+}
+
 function viewDesk() {
   const reading = books().filter(b => b.status === "reading").sort((a, b) => (lastActivity(b.id) > lastActivity(a.id) ? 1 : -1));
   const next = books().filter(b => b.status === "want").sort(byQueue).slice(0, 5);
-  const todayTotal = reading.reduce((n, b) => n + Math.max(0, pagesToday(b.id)), 0);
   const empty = !S.books.size;
   return html`
     <div class="dateline sc"><span>${longDate(new Date())}</span><span>The Desk</span></div>
@@ -213,20 +266,22 @@ function viewDesk() {
     </section>` : html`
     <h1>In hand</h1>
     ${reading.length ? reading.map(deskEntry) : html`<p class="quiet">Nothing in hand. Begin something from the list below.</p>`}
-    <p class="ledger">${todayTotal ? `${plural(todayTotal, "page")} read today.` : "Nothing logged yet today."}
-      <span class="quiet">Daily effort and finish dates arrive in the next stage.</span></p>
+    ${ledgerBlock(reading)}
     <h2 class="sc small">Next on the shelf</h2>
     <ol class="shelf">${next.map((b, i) => { const e = effective(b); return html`<li>
-      <span class="n">${i + 1}</span><a href="#/book/${b.id}"><i>${e.title}</i> <span class="quiet">${e.author}</span></a>
+      <span class="n">${i + 1}</span><a href="#/book/${b.id}"><i>${e.title}</i> <span class="quiet">${e.author}</span>
+        ${startWords(b.id) ? html`<span class="d">begins ${startWords(b.id).short}</span>` : ""}</a>
       <button class="link" data-act="status" data-id="${b.id}" data-to="reading">Begin</button></li>`; })}</ol>
     <p><a href="#/list">The whole list</a> · <a href="#/add">Add a book</a></p>`}`;
 }
 
 function listRow(b, i) {
   const e = effective(b), page = currentPage(evs(b.id)), d = bookDates(evs(b.id));
+  const fw = finishWords(b.id);
   const right = b.status === "read" ? `finished ${shortDate(d.finished)}`
-    : b.status === "reading" ? `p. ${page}${e.pages ? ` of ${e.pages}` : ""}`
-    : e.pages ? `${e.pages} pp.` : "pages unknown";
+    : b.status === "abandoned" ? `set aside ${shortDate(d.finished || d.started || d.added)}`
+    : b.status === "reading" ? `p. ${page}${e.pages ? ` of ${e.pages}` : ""}${fw && !fw.plain ? ` · ${fw.short}` : ""}`
+    : e.pages ? `${e.pages} pp.${fw && !fw.plain ? ` · ${fw.short}` : ""}` : "pages unknown";
   return html`<li class="${b.flags?.goneFromGoodreads ? "flagged" : ""}">
     <span class="n">${i ?? ""}</span>
     <a href="#/book/${b.id}"><i>${e.title}</i> <span class="quiet">${e.author}${e.year ? `, ${e.year}` : ""}</span>
@@ -299,6 +354,9 @@ function viewBook(id) {
         <dt>Edition</dt><dd>${[e.edition, s.publisher].filter(Boolean).join(", ") || "—"}</dd>
         <dt>Pages</dt><dd>${e.pages ?? "unknown"}${"pages" in m ? raw(' <span class="quiet">(your count)</span>') : ""}</dd>
         <dt>Progress</dt><dd>${page ? `page ${page}` : "not begun"}${e.pages && page ? ` · ${Math.round((page / e.pages) * 100)}%` : ""}</dd>
+        <dt>Difficulty</dt><dd>${diffText(b)}</dd>
+        <dt>Pace</dt><dd>${paceText(b)}</dd>
+        ${(b.status === "reading" || b.status === "want") && finishWords(id) ? html`<dt>${b.status === "want" ? "Expected" : "Finishes"}</dt><dd>${b.status === "want" && startWords(id) ? `begins ${startWords(id).phrase}; ` : ""}${finishWords(id).plain ? finishWords(id).phrase : `finishes ${finishWords(id).phrase}`}</dd>` : ""}
         <dt>Added</dt><dd>${shortDate(d.added) || "—"}</dd>
         ${d.started ? html`<dt>Begun</dt><dd>${shortDate(d.started)}</dd>` : ""}
         ${d.finished ? html`<dt>Finished</dt><dd>${shortDate(d.finished)}</dd>` : ""}
@@ -308,6 +366,7 @@ function viewBook(id) {
       ${b.flags?.goneFromGoodreads ? html`<p class="notice quiet">This book is no longer on your Goodreads Want to Read or Currently Reading shelves (noticed ${shortDate(b.flags.goneFromGoodreads)}). It stays here until you decide.
         <button class="link" data-act="clear-flag" data-id="${id}">Keep it</button></p>` : ""}
 
+      ${b.status === "reading" ? shareBlock(b) : ""}
       <h2 class="sc small">Annotation</h2>
       <form class="annot" data-form="annotation" data-id="${id}">
         <label class="vh" for="annot">One line: a quote or a note</label>
@@ -320,6 +379,8 @@ function viewBook(id) {
       <details class="edit"><summary>Correct the details</summary>
         <form data-form="details" data-id="${id}">
           ${field("title", "Title")}${field("author", "Author")}${field("pages", "Pages", "number")}${field("year", "First published", "number")}${field("edition", "Edition")}
+          <label>Difficulty, 1–10 <input name="difficulty" type="number" step="0.5" min="1" max="10" inputmode="decimal" value="${m.difficulty ?? ""}" placeholder="${M.difficultyOf({ ...b, mine: {} }, derived().p).source === "provisional" ? "not yet scored" : Math.round(M.difficultyOf({ ...b, mine: {} }, derived().p).D * 10) / 10}">
+            <span class="quiet small">Reading effort, not merit: how slowly a page goes. Leave empty to use the AI's score.</span></label>
           <button>Save</button> <span class="quiet small">Your corrections are kept even when Goodreads changes.</span>
         </form>
       </details>
@@ -332,6 +393,29 @@ function viewBook(id) {
            <button data-act="delete" data-id="${id}">Remove it</button> <button class="link" data-act="cancel">Keep it</button>`
         : html`<button class="link" data-act="ask-delete" data-id="${id}">Remove from the library…</button>`}</p>
     </article>`;
+}
+
+function diffText(b) {
+  const d = M.difficultyOf(b, derived().p);
+  const n = Math.round(d.D * 10) / 10;
+  return d.source === "yours" ? `${n} (your figure)` : d.source === "ai" ? `${n}` : `${n}, provisional (not yet scored)`;
+}
+
+function paceText(b) {
+  const p = derived().p, D = M.difficultyOf(b, p).D;
+  const pp = 10 * M.pagesPerToken(D, p), min = M.minutesPerPage(D, p);
+  const q = x => (x >= 10 ? Math.round(x) : Math.round(x * 2) / 2);
+  return raw(`about ${q(pp)} pages for 10 tokens <span class="quiet small">(≈ ${q(min)} min a page)</span>`);
+}
+
+function shareBlock(b) {
+  const f = derived().fc.get(b.id) || {};
+  const pct = Math.round((f.share || 0) * 100);
+  return html`<h2 class="sc small">Share of the day</h2>
+    ${b.sharePin != null
+      ? html`<p>Fixed at ${b.sharePin} ${b.sharePin === 1 ? "token" : "tokens"} a day. <button class="link" data-act="unpin" data-id="${b.id}">Let it be learned</button></p>`
+      : html`<p>About ${pct}% of the daily effort, learned from what you've read lately.</p>
+        <form class="inline" data-form="pin" data-id="${b.id}"><label>Fix at <input name="pin" type="number" min="0" max="100" step="0.5" inputmode="decimal"> tokens a day</label><button>Fix</button></form>`}`;
 }
 
 function viewAdd() {
@@ -414,7 +498,26 @@ function viewSettings() {
       <form data-form="tokens" class="inline">
         <label>Tokens a day <input name="tokens" type="number" min="1" max="100" value="${S.settings.dailyTokens}" inputmode="numeric"></label>
         <button>Save</button></form>
-      <p class="quiet small">One token ≈ ${S.settings.minutesPerToken} minutes of focused reading, so ${S.settings.dailyTokens} tokens ≈ ${S.settings.dailyTokens * S.settings.minutesPerToken} minutes. Pages per day and finish dates use this from Stage 3.</p>
+      <p class="quiet small">${S.settings.dailyTokens} tokens ≈ ${S.settings.dailyTokens * S.settings.minutesPerToken} minutes of focused reading.</p>
+    </section>
+
+    <section><h2 class="sc small">The model</h2>
+      <form data-form="model" class="stack">
+        <label>Minutes per token <input name="tau" type="number" min="1" max="30" step="0.5" value="${S.settings.minutesPerToken}" inputmode="decimal">
+          <span class="quiet small">Only changes the minutes shown in small print; pages and dates stay the same.</span></label>
+        <label>Easy-text speed, words a minute <input name="v1" type="number" min="100" max="800" value="${S.settings.model.v1}" inputmode="numeric">
+          <span class="quiet small">Your pace on the lightest prose (difficulty 1).</span></label>
+        <label>Hard-text speed, words a minute <input name="v10" type="number" min="20" max="400" value="${S.settings.model.v10}" inputmode="numeric">
+          <span class="quiet small">Your pace on the densest text (difficulty 10). The gap between the two sets how much harder hard books are: now ${Math.round((S.settings.model.v1 / S.settings.model.v10) * 10) / 10}×.</span></label>
+        <label>Books in hand at once <select name="concurrency">
+          <option value="auto" ${S.settings.concurrency === "auto" ? raw("selected") : ""}>As many as I'm reading now</option>
+          ${[1, 2, 3, 4, 5].map(n => html`<option value="${n}" ${S.settings.concurrency === n ? raw("selected") : ""}>${n}</option>`)}</select>
+          <span class="quiet small">When a book finishes, the next on the list begins only if you're below this.</span></label>
+        <fieldset class="days"><legend>Reading days</legend>
+          ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((n, i) => html`<label><input type="checkbox" name="day${i}" ${S.settings.readingDays[i] ? raw("checked") : ""}> ${n}</label>`)}</fieldset>
+        <p><button>Save</button></p>
+      </form>
+      <p class="quiet small">A page of difficulty 1 takes about ${M.minutesPerPage(1, derived().p).toFixed(2)} minutes; difficulty 10, about ${M.minutesPerPage(10, derived().p).toFixed(1)}.</p>
     </section>
 
     <section><h2 class="sc small">Library</h2>
@@ -477,6 +580,7 @@ async function act(name, d) {
       if (d.to === "read") S.notice = `Finished: ${effective(b).title}.`;
       return render();
     }
+    case "unpin": return commit({ books: [patchBook(b, { sharePin: null }, t)] });
     case "clear-flag": return commit({ books: [patchBook(b, { flags: { ...b.flags, goneFromGoodreads: null } }, t)] });
     case "reset-field": { const mine = { ...b.mine }; delete mine[d.key]; return commit({ books: [patchBook(b, { mine }, t)] }); }
     case "annot-default": { const mine = { ...b.mine }; delete mine.annotation; return commit({ books: [patchBook(b, { mine }, t)] }); }
@@ -558,6 +662,7 @@ async function submit(form) {
       const mine = { ...b.mine };
       for (const k of ["title", "author", "edition"]) { const v = (f.get(k) || "").trim(); if (v) mine[k] = v; else delete mine[k]; }
       for (const k of ["pages", "year"]) { const v = f.get(k); if (v && !isNaN(+v)) mine[k] = +v; else delete mine[k]; }
+      { const v = f.get("difficulty"); if (v && !isNaN(+v)) mine.difficulty = Math.min(10, Math.max(1, +v)); else delete mine.difficulty; }
       S.notice = "Saved.";
       return commit({ books: [patchBook(b, { mine }, t)] });
     }
@@ -567,6 +672,20 @@ async function submit(form) {
       await commit({ books: [r.book], events: r.events });
       location.hash = `#/book/${r.book.id}`;
       return;
+    }
+    case "pin": {
+      const v = +f.get("pin");
+      if (isNaN(v) || f.get("pin") === "") return;
+      return commit({ books: [patchBook(b, { sharePin: Math.max(0, v) }, t)] });
+    }
+    case "model": {
+      const num = (k, lo, hi, dflt) => { const v = +f.get(k); return isNaN(v) || f.get(k) === "" ? dflt : Math.min(hi, Math.max(lo, v)); };
+      const conc = f.get("concurrency");
+      const settings = { ...S.settings, minutesPerToken: num("tau", 1, 30, 4), model: { ...S.settings.model, v1: num("v1", 100, 800, 300), v10: num("v10", 20, 400, 75) },
+        concurrency: conc === "auto" ? "auto" : +conc, readingDays: [0, 1, 2, 3, 4, 5, 6].map(i => (f.get(`day${i}`) ? 1 : 0)), updatedAt: t };
+      if (settings.model.v10 >= settings.model.v1) { S.notice = "The hard-text speed must be slower than the easy-text speed."; return render(); }
+      S.notice = "Saved.";
+      return commit({ settings });
     }
     case "tokens": {
       const n = Math.max(1, Math.min(100, Math.round(+f.get("tokens") || 10)));

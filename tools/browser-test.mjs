@@ -91,6 +91,20 @@ try {
   check(reading > 0, `desk after import: ${reading} in hand`);
   await shot("3-desk");
 
+  // the model on the desk
+  check((await text()).includes("At your current pace, finishes"), "each book in hand has a finish phrase");
+  check((await text()).includes("The ledger begins with your first entry"), "ledger waits for the first entry");
+  const plannedToday = () => evaluate("(() => { const m = document.querySelector('.entry .where b'); return m ? parseInt(m.textContent, 10) : 0; })()");
+  const before10 = await plannedToday();
+  await go(`${BASE}/#/settings`); await until("!!document.querySelector('[data-form=tokens]')");
+  await evaluate("(() => { const f = document.querySelector('[data-form=tokens]'); f.tokens.value = '20'; f.requestSubmit(); })()"); await sleep(200);
+  await go(`${BASE}/#/`); await until("!!document.querySelector('.entry')");
+  const after20 = await plannedToday();
+  check(after20 >= before10 * 2 - 1 && after20 > before10, `doubling the tokens doubles today's pages (${before10} → ${after20})`);
+  await go(`${BASE}/#/settings`); await until("!!document.querySelector('[data-form=tokens]')");
+  await evaluate("(() => { const f = document.querySelector('[data-form=tokens]'); f.tokens.value = '10'; f.requestSubmit(); })()"); await sleep(200);
+  await go(`${BASE}/#/`); await until("!!document.querySelector('.entry')");
+
   // log, undo, set page, finish
   const firstId = await evaluate("document.querySelector('.entry [data-act=add]').dataset.id");
   const page = () => evaluate(`(() => { const S = window.__antilibrary; const ev = S.byBook.get('${firstId}') || []; let p = 0; for (const e of ev) if (e.type === 'progress') p = e.page; return p; })()`);
@@ -98,7 +112,8 @@ try {
   await click(`.entry [data-act=add][data-id='${firstId}'][data-n='5']`); await sleep(150);
   await click(`.entry [data-act=add][data-id='${firstId}'][data-n='2']`); await sleep(150);
   check((await page()) === p0 + 7, "+5 then +2 adds seven pages");
-  check((await text()).includes("7 today"), "today's pages shown");
+  check(/On course|ahead|behind/.test(await text()), "the ledger speaks after the first entry");
+  check(/\b7 of \d+ pages today/.test(await text()), "today's pages shown against the plan");
   await click(`[data-act=undo][data-id='${firstId}']`); await sleep(150);
   check((await page()) === p0 + 5, "undo removes only the last entry");
   const total = await evaluate(`(() => { const b = window.__antilibrary.books.get('${firstId}'); return (b.mine && b.mine.pages) || (b.synced && b.synced.pages) || 0; })()`);
@@ -116,6 +131,10 @@ try {
   // record view, annotation is mine and survives re-import
   await go(`${BASE}/#/book/${firstId}`); await until("!!document.querySelector('.record')");
   await evaluate("(() => { const i = document.getElementById('annot'); i.value = 'My own line.'; i.form.requestSubmit(); })()"); await sleep(200);
+  check((await text()).includes("provisional"), "an unscored book says its difficulty is provisional");
+  await evaluate("(() => { const f = document.querySelector('[data-form=details]'); f.difficulty.value = '3'; f.requestSubmit(); })()"); await sleep(200);
+  check((await text()).includes("3 (your figure)"), "your difficulty overrides");
+  check(/about 3[0-9] pages for 10 tokens/.test(await text()), "difficulty 3 gives about 34 pages for 10 tokens");
   await shot("4-record");
   await go(`${BASE}/#/import`); await until("!!document.querySelector('input[data-change=csv]')");
   await chooseFile("input[data-change=csv]", CSV);
