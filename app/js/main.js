@@ -36,7 +36,9 @@ function derived() {
   const earned = M.earnings(all, S.byBook, p);
   const firstUse = M.firstUseOf(S.events);
   const led = M.ledger({ earned, events: S.events, settings: S.settings, now: t, firstUse });
-  const fc = M.forecast({ books: all, byBook: S.byBook, settings: S.settings, now: t, earnedToday: led ? led.todayTokens : 0, earned, firstUse });
+  const earnedTodayBy = new Map();
+  for (const e of earned) if (e.day === day) earnedTodayBy.set(e.bookId, (earnedTodayBy.get(e.bookId) || 0) + e.tokens);
+  const fc = M.forecast({ books: all, byBook: S.byBook, settings: S.settings, now: t, earnedToday: led ? led.todayTokens : 0, earnedTodayBy, earned, firstUse });
   const spread = M.paceSpread(earned, t, firstUse);
   const band = M.readingBand(earned, t);
   const todayPagesBy = new Map();
@@ -745,7 +747,7 @@ document.addEventListener("change", e => {
 window.addEventListener("hashchange", () => { S.confirm = null; render(); window.scrollTo(0, 0); });
 window.addEventListener("focus", () => { if (S.ready && S.auto.state === "granted") guard(syncWithAutoFile()); });
 
-export const APP_VERSION = "0.3 (Stage 3: the model)";
+export const APP_VERSION = "0.3.1 (Stage 3: the model)";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

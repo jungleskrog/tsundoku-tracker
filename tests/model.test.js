@@ -125,3 +125,17 @@ test("difficulty: yours, then the AI's, then a provisional 5", () => {
   const e = earnings([{ id: "x", mine: { difficulty: 10 } }], new Map([["x", [{ type: "progress", source: "app", page: 6, prevPage: 0, at: NOW.toISOString() }]]]), P);
   near(e[0].tokens, 6 * 6 / 4, 1e-9, "tokens earned");
 });
+
+test("today: a book that has met its share is done; reading beyond it comes out of the others", () => {
+  const books = [book("a", 5, 300, "reading"), book("b", 5, 300, "reading")];
+  const shares = new Map([["a", 0.5], ["b", 0.5]]);
+  const met = run(books, [], { shares, earnedToday: 5, earnedTodayBy: new Map([["a", 5]]) });
+  near(met.get("a").todayTokens, 0, 1e-9, "a met its share");
+  near(met.get("b").todayTokens, 5, 1e-9, "b keeps its share");
+  const beyond = run(books, [], { shares, earnedToday: 7, earnedTodayBy: new Map([["a", 7]]) });
+  near(beyond.get("a").todayTokens, 0, 1e-9, "a over");
+  near(beyond.get("b").todayTokens, 3, 1e-9, "b gets what's left of the day");
+  const part = run(books, [], { shares, earnedToday: 2, earnedTodayBy: new Map([["a", 2]]) });
+  near(part.get("a").todayTokens, 3, 1e-9, "a has 3 left");
+  near(part.get("b").todayTokens, 5, 1e-9, "b untouched");
+});

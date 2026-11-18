@@ -93,7 +93,7 @@ export function learnedShares(bookIds, earned, now, { windowDays = 14, halfLife 
  * Pour each day's tokens into the books in hand until everything is placed.
  * Returns per book: { finish (days from start of today, fractional), start, todayTokens, share }.
  */
-export function forecast({ books, byBook, settings, now, earnedToday = 0, shares: givenShares = null, earned = [], firstUse = null }) {
+export function forecast({ books, byBook, settings, now, earnedToday = 0, earnedTodayBy = null, shares: givenShares = null, earned = [], firstUse = null }) {
   const p = params(settings);
   const goal = settings.dailyTokens || 0;
   const mask = settings.readingDays || [1, 1, 1, 1, 1, 1, 1];
@@ -159,6 +159,19 @@ export function forecast({ books, byBook, settings, now, earnedToday = 0, shares
     const dayBudget = budget || 1;
     let spent = 0;
     let pinLeft = new Map([...pins].filter(([id]) => active.includes(id)));
+    if (d === 0 && earnedTodayBy) {
+      // Today: each book's share of the whole day, minus what you've already read of it.
+      // Reading beyond a book's share comes out of the others; a book that's met its share is done for today.
+      const pinTotal = active.reduce((a, id) => a + (pins.get(id) || 0), 0);
+      const unpinned = active.filter(id => !pins.has(id));
+      const shareSum = unpinned.reduce((a, id) => a + (shares.get(id) || 0), 0) || 1;
+      const target = new Map(active.map(id => [id, pins.has(id) ? pins.get(id) : Math.max(0, full - pinTotal) * ((shares.get(id) || 0) / shareSum)]));
+      const left = new Map(active.map(id => [id, Math.max(0, target.get(id) - (earnedTodayBy.get(id) || 0))]));
+      const leftSum = [...left.values()].reduce((a, b) => a + b, 0);
+      const scale = leftSum > 0 ? Math.min(1, budget / leftSum) : 0;
+      pinLeft = new Map([...left].map(([id, v]) => [id, v * scale]));
+      budget = [...pinLeft.values()].reduce((a, b) => a + b, 0);
+    }
     let guard = 0;
     while (budget > 1e-9 && active.length && guard++ < 1000) {
       // this round's allocation: pins first, the rest by share
@@ -166,7 +179,7 @@ export function forecast({ books, byBook, settings, now, earnedToday = 0, shares
       let pinned = 0;
       for (const [id, t] of pinLeft) if (active.includes(id)) { const a = Math.min(t, budget - pinned); if (a > 0) { alloc.set(id, a); pinned += a; } }
       const free = budget - pinned;
-      const unpinned = active.filter(id => !pins.has(id));
+      const unpinned = active.filter(id => !pins.has(id) && !(d === 0 && earnedTodayBy && pinLeft.has(id)));
       const shareSum = unpinned.reduce((a, id) => a + (shares.get(id) || 0), 0);
       for (const id of unpinned) alloc.set(id, free * ((shares.get(id) || 0) / (shareSum || 1)));
       const total = [...alloc.values()].reduce((a, b) => a + b, 0);
