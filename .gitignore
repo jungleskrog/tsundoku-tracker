@@ -4,3 +4,4 @@ spike/*.html
 *.csv
 __pycache__/
 .DS_Store
+!tests/fixtures/*.csv
