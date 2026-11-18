@@ -16,7 +16,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 MODEL = "claude-haiku-5-5"
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 # Claude Haiku 5.5, prompts under 100K tokens: $0.10 in / $0.50 out per million.
 PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6
 # Calibrated guesses until real usage replaces them (see estimate()).
@@ -46,7 +46,18 @@ content: normally the mean of the four components. You may move it by up to 1 po
 
 words: your best estimate of the total words in the text most English-language readers meet (the usual translation for translated books). Give the basis in one short phrase.
 
-youth (0–100): reading-youth, an interpretive ordering, not a ranking of worth: how early in a serious reader's life this book typically arrives. 0 = often first read at about 14; 100 = usually reached only after decades of reading. Weigh: typical age of first encounter (school set texts, cult teenage reads pull earlier); ties to a youth culture or moment (e.g. the Beats pull earlier); how much historical context it needs; whether it answers or depends on earlier books. Difficulty alone must not decide youth: an easy book can belong late and a hard one early.
+youth (0–100): reading-youth, an interpretive ordering, not a ranking of worth: how early in a serious reader's life this book typically arrives. 0 = often first read at about 14; 100 = usually reached only after decades of reading. Weigh: typical age of first encounter (school set texts, cult teenage and student reads pull earlier); ties to a youth culture or moment (the Beats, punk, early internet culture pull earlier); how much lived experience or historical context it needs to land; whether it answers or depends on earlier books.
+
+Youth is NOT difficulty. Score it separately and expect the two to disagree often. Anchors where they diverge:
+5 = The Hitchhiker's Guide to the Galaxy (easy, read young).
+10 = On the Road (easy, read young).
+20 = Nietzsche's Thus Spoke Zarathustra (hard, but a classic student read).
+25 = Crime and Punishment (demanding, but commonly read at university).
+55 = Stoner (easy prose, but usually reached later and lands with age).
+65 = Middlemarch (moderate, but typically a later read).
+75 = a quiet late-life memoir or a book about ageing and work (easy, read late).
+85 = Montaigne's Essays (moderate, usually a late companion).
+Popular self-help, accessible activism and political polemic aimed at young adults usually sit early (10–35) whatever their topic.
 
 If you do not recognise the book with reasonable confidence, set identified to false, give your best estimate from the title, author and year, and set confidence to "low"."""
 
@@ -113,7 +124,7 @@ def flags(s: BookScore, pages: int | None) -> list[str]:
     out = []
     if pages:
         wpp = s.words / pages
-        if not 150 <= wpp <= 600:
+        if not 180 <= wpp <= 480:
             out.append(f"check page count or word estimate ({round(wpp)} words a page)")
     if not s.identified or s.confidence == "low":
         out.append("low confidence: the model may not know this book")

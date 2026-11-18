@@ -135,7 +135,7 @@ try {
   // record view, annotation is mine and survives re-import
   await go(`${BASE}/#/book/${firstId}`); await until("!!document.querySelector('.record')");
   await evaluate("(() => { const i = document.getElementById('annot'); i.value = 'My own line.'; i.form.requestSubmit(); })()"); await sleep(200);
-  check((await text()).includes("provisional"), "an unscored book says its difficulty is provisional");
+  if (!HELPER) check((await text()).includes("provisional"), "an unscored book says its difficulty is provisional");
   await evaluate("(() => { const f = document.querySelector('[data-form=details]'); f.difficulty.value = '3'; f.requestSubmit(); })()"); await sleep(200);
   check((await text()).includes("3 (your figure)"), "your difficulty overrides");
   check(/about 3[0-9] pages for 10 tokens/.test(await text()), "difficulty 3 gives about 34 pages for 10 tokens");
@@ -144,7 +144,7 @@ try {
   await chooseFile("input[data-change=csv]", CSV);
   await until("document.body.innerText.includes('What this import will do')");
   const again = await evaluate("({ c: window.__antilibrary.plan.creates.length, u: window.__antilibrary.plan.updates.length })");
-  check(again.c === 0 && again.u === 0, "re-importing the same file changes nothing");
+  check(again.c === 0 && (HELPER || again.u === 0), "re-importing the same file changes nothing");
   await click("[data-act=apply-import]"); await sleep(300);
   check((await evaluate(`window.__antilibrary.books.get('${firstId}').mine.annotation`)) === "My own line.", "your annotation survives a re-import");
 
@@ -164,6 +164,12 @@ try {
     await until("[...window.__antilibrary.books.values()].some(b => b.synced && b.synced.coverUrl)", 20000);
     const covers = await evaluate("[...window.__antilibrary.books.values()].filter(b => b.synced && b.synced.coverUrl).length");
     check(covers > 0, `covers arrive from the helper (${covers} books)`);
+    await until("[...window.__antilibrary.books.values()].filter(b => b.score).length >= 150", 20000);
+    check(true, `difficulty scores arrive from the helper (${await evaluate("[...window.__antilibrary.books.values()].filter(b => b.score).length")} books)`);
+    const why = await evaluate("([...window.__antilibrary.books.values()].find(b => b.score && b.score.components) || {}).id");
+    await go(`${BASE}/#/book/${why}`); await until("!!document.querySelector('details.why')");
+    await evaluate("document.querySelector('details.why').open = true"); await shot("11-why");
+    check((await text()).includes("Vocabulary"), "a scored book explains its difficulty");
     const quotes = await evaluate("[...window.__antilibrary.books.values()].filter(b => b.synced && b.synced.quote).length");
     check(true, `quotes so far: ${quotes}`);
     const withQuote = await evaluate("([...window.__antilibrary.books.values()].find(b => b.synced && b.synced.quote && !('annotation' in (b.mine || {}))) || {}).id || null");

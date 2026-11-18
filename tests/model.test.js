@@ -139,3 +139,10 @@ test("today: a book that has met its share is done; reading beyond it comes out 
   near(part.get("a").todayTokens, 3, 1e-9, "a has 3 left");
   near(part.get("b").todayTokens, 5, 1e-9, "b untouched");
 });
+
+test("an implausible words-a-page is treated as a typical page, not trusted", () => {
+  const over = pageDifficulty({ words: 90000, pages: 128, C: 4 }, P);   // 703 words a page: estimate too high
+  const typical = pageDifficulty({ words: 480 * 128, pages: 128, C: 4 }, P);
+  near(over, typical, 1e-9, "clamped at 480");
+  near(pageDifficulty({ words: 2400, pages: 56, C: 6 }, P), pageDifficulty({ words: 180 * 56, pages: 56, C: 6 }, P), 1e-9, "clamped at 180");
+});

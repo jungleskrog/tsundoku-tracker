@@ -18,9 +18,14 @@ export const speed = (C, p) => p.v1 * Math.pow(p.v10 / p.v1, (C - 1) / 9);
 /** Nominal minutes a page for page difficulty D. */
 export const minutesPerPage = (D, p) => p.emin * Math.pow(p.emax / p.emin, (D - 1) / 9);
 
-/** Page difficulty from the AI's word estimate and content score, and your page count. */
+/** Words a page outside this range usually means a wrong page count or word estimate. */
+export const WPP_RANGE = [180, 480];
+
+/** Page difficulty from the AI's word estimate and content score, and your page count.
+ *  An implausible words-a-page is clamped to a typical page rather than trusted. */
 export function pageDifficulty({ words, pages, C }, p) {
-  const E = words / pages / speed(C, p);
+  const wpp = Math.min(WPP_RANGE[1], Math.max(WPP_RANGE[0], words / pages));
+  const E = wpp / speed(C, p);
   const D = 1 + (9 * Math.log(E / p.emin)) / Math.log(p.emax / p.emin);
   return Math.min(10, Math.max(1, D));
 }

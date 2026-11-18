@@ -528,7 +528,8 @@ function whyBlock(b) {
   return html`<details class="why"><summary>Why difficulty ${Math.round(D * 10) / 10}${b.mine?.difficulty != null ? " (before your figure)" : ""}</summary>
     <dl class="colophon">${Object.entries(sc.components).map(([k, c]) => html`<dt>${COMPONENT_LABEL[k] || k}</dt><dd>${c.score} · ${c.reason}</dd>`)}
       <dt>Content</dt><dd>${sc.C}${sc.content_reason ? ` · ${sc.content_reason}` : ""}</dd>
-      <dt>Length</dt><dd>about ${Math.round(sc.words / 1000) * 1000} words${pages ? `, so about ${Math.round(sc.words / pages)} a page in your edition` : ""} <span class="quiet small">(${sc.words_basis})</span></dd>
+      <dt>Length</dt><dd>about ${(Math.round(sc.words / 1000) * 1000).toLocaleString("en-GB")} words${pages ? `, so about ${Math.round(sc.words / pages)} a page in your edition` : ""} <span class="quiet small">(${sc.words_basis})</span>
+        ${pages && (sc.words / pages < M.WPP_RANGE[0] || sc.words / pages > M.WPP_RANGE[1]) ? raw(`<br><span class="quiet small">That's an unusual page, so the difficulty assumes a typical one (${M.WPP_RANGE[0]}–${M.WPP_RANGE[1]} words). Check the page count, or set your own figure.</span>`) : ""}</dd>
     </dl>
     ${sc.flags && sc.flags.length ? html`<p class="notice quiet">${sc.flags.join("; ")}.</p>` : ""}
     <p class="quiet small">Difficulty is reading effort, not merit: how slowly a page of this text goes. Scored by ${sc.model === "claude-haiku-5-5" ? "Claude Haiku 5.5" : sc.model} on ${shortDate(sc.scored_at)}. If it feels wrong, set your own figure below.</p>
@@ -913,7 +914,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "0.4 (Stage 4: the Mac helper)";
+export const APP_VERSION = "0.4.1 (Stage 4: the Mac helper)";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
