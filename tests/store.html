@@ -1,0 +1,27 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="results"></pre>
+<script type="module">
+import * as store from "/js/store.js";
+const out = [], ok = (cond, name) => out.push(`${cond ? "ok" : "FAIL"} ${name}`);
+try {
+  await store.write({ put: { books: [{ id: "b1", status: "want" }, { id: "b2", status: "read" }], events: [{ id: "e1", bookId: "b1", at: "2026-01-01" }, { id: "e2", bookId: "b1", at: "2026-01-02" }] } });
+  let all = await store.loadAll();
+  ok(all.books.length === 2 && all.events.length === 2, "write and load");
+  await store.write({ put: { books: [{ id: "b1", status: "reading" }] }, del: { events: ["e1"] } });
+  all = await store.loadAll();
+  ok(all.books.find(b => b.id === "b1").status === "reading" && all.events.length === 1, "update and delete in one transaction");
+  let failed = false;
+  try { await store.write({ put: { books: [{ id: "b3" }, { notAnId: true }] } }); } catch { failed = true; }
+  all = await store.loadAll();
+  ok(failed && !all.books.some(b => b.id === "b3"), "a failed write changes nothing (atomic)");
+  for (let i = 0; i < 12; i++) await store.snapshot(`snap ${i}`, { books: [], events: [] });
+  const snaps = await store.listSnapshots();
+  ok(snaps.length === 10 && snaps[0].reason === "snap 11", "snapshots: newest kept, capped at 10");
+  await store.replaceAll({ books: [{ id: "x" }], events: [], tombstones: [{ id: "e9", at: "t" }], settings: { id: "settings", v: 1 } });
+  all = await store.loadAll();
+  ok(all.books.length === 1 && all.tombstones.length === 1 && all.settings.v === 1, "replace everything");
+  await store.setMeta("k", { a: 1 });
+  ok((await store.getMeta("k")).a === 1, "meta values");
+} catch (e) { out.push("FAIL exception " + e.message); }
+document.getElementById("results").textContent = out.join("\n");
+document.title = "done";
+</script>

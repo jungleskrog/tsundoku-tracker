@@ -1,0 +1,317 @@
+// Antilibrary domain rules. Pure functions: no storage, no DOM.
+// Records follow the approved schema (architecture note §5):
+//   book.synced  — written only by import/sync
+//   book.mine    — written only by the user; any key present wins
+//   events       — append-only history; current page and dates derive from it
+import { bookId, eventId } from "./ids.js";
+import { keysBetween, compareKeys } from "./keys.js";
+
+export const SCHEMA_VERSION = 1;
+export const STATUSES = ["want", "reading", "paused", "read", "abandoned"];
+export const IMPORT_SHELVES = ["to-read", "currently-reading", "read"];
+
+export function defaultSettings(now) {
+  return {
+    id: "settings",
+    schemaVersion: SCHEMA_VERSION,
+    dailyTokens: 10,
+    minutesPerToken: 4,
+    model: { v1: 300, v10: 75, emin: 0.75, emax: 6 },
+    concurrency: "auto",
+    readingDays: [1, 1, 1, 1, 1, 1, 1],
+    goodreadsUserId: null,
+    lastExportAt: null,
+    updatedAt: now,
+  };
+}
+
+// --- Reading a book ---------------------------------------------------------
+
+const pick = (mine, synced, key) => (mine && key in mine ? mine[key] : synced ? synced[key] ?? null : null);
+
+/** The values the app shows: your override, else synced, else empty. */
+export function effective(book) {
+  const m = book.mine || {}, s = book.synced || {};
+  return {
+    title: pick(m, s, "title") || "Untitled",
+    author: pick(m, s, "author") || "",
+    pages: pick(m, s, "pages"),
+    year: pick(m, s, "year"),
+    edition: pick(m, s, "edition") ?? s.binding ?? null,
+    coverUrl: s.coverUrl || null,
+    // "" in mine.annotation means deliberately blank; absent means use the synced quote
+    annotation: "annotation" in m ? m.annotation : s.quote ?? "",
+    annotationIsMine: "annotation" in m,
+    pagesEstimated: !("pages" in m) && !s.pages,
+  };
+}
+
+export const byTime = (a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** Map bookId -> events (sorted oldest first). */
+export function eventsByBook(events) {
+  const map = new Map();
+  for (const e of events) {
+    if (!e.bookId) continue;
+    if (!map.has(e.bookId)) map.set(e.bookId, []);
+    map.get(e.bookId).push(e);
+  }
+  for (const list of map.values()) list.sort(byTime);
+  return map;
+}
+
+export function currentPage(bookEvents = []) {
+  let page = 0;
+  for (const e of bookEvents) if (e.type === "progress") page = e.page;
+  return page;
+}
+
+/** Dates derived from history: first start, last finish, added. */
+export function bookDates(bookEvents = []) {
+  let added = null, started = null, finished = null;
+  for (const e of bookEvents) {
+    if (e.type !== "status") continue;
+    if (e.from == null && !added) added = e.at;
+    if (e.to === "reading" && !started) started = e.at;
+    if (e.to === "read") finished = e.at;
+    if (e.from === "read" && e.to !== "read") finished = null; // re-opened
+  }
+  return { added, started, finished };
+}
+
+// --- Dates ------------------------------------------------------------------
+
+/** "2026-11-18" or "2026-11" -> ISO instant at local noon (date-only facts). */
+export function dateToAt(d) {
+  if (!d) return null;
+  const [y, m = "01", day = "01"] = d.split("-");
+  return new Date(+y, +m - 1, +day, 12, 0, 0).toISOString();
+}
+
+export function localDayKey(at) {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// --- Actions (return new events + a patch for the book) ---------------------
+
+function statusEvent(book, to, at, extra = {}) {
+  return { id: eventId(), bookId: book.id, at, type: "status", from: book.status ?? null, to, source: "app", ...extra };
+}
+
+/** Set the current page. Starting a not-yet-started book is implied. */
+export function logPage(book, bookEvents, page, now) {
+  const { pages } = effective(book);
+  const cur = currentPage(bookEvents);
+  const next = Math.max(0, Math.min(Math.round(page), pages || Infinity));
+  if (next === cur) return null;
+  const progress = { id: eventId(), bookId: book.id, at: now, type: "progress", page: next, prevPage: cur, source: "app" };
+  const events = [progress];
+  let patch = null;
+  if (book.status === "want" || book.status === "paused") {
+    events.push(statusEvent(book, "reading", now, { with: progress.id }));
+    patch = { status: "reading" };
+  }
+  return { events, patch };
+}
+
+export const logPages = (book, bookEvents, delta, now) => logPage(book, bookEvents, currentPage(bookEvents) + delta, now);
+
+/** Undo the most recent progress entry made in the app (and any status change made with it). */
+export function undoLast(book, bookEvents) {
+  const last = [...bookEvents].reverse().find(e => e.type === "progress" && e.source === "app");
+  if (!last) return null;
+  const linked = bookEvents.filter(e => e.with === last.id);
+  const remove = [last.id, ...linked.map(e => e.id)];
+  const revert = linked.find(e => e.type === "status");
+  return { remove, patch: revert ? { status: revert.from } : null, event: last };
+}
+
+/** Change status (start, pause, finish, abandon, back to the list). */
+export function changeStatus(book, bookEvents, to, now) {
+  if (!STATUSES.includes(to)) throw new Error(`unknown status ${to}`);
+  if (book.status === to) return null;
+  const events = [statusEvent(book, to, now)];
+  const { pages } = effective(book);
+  if (to === "read" && pages && currentPage(bookEvents) < pages) {
+    events.unshift({ id: eventId(), bookId: book.id, at: now, type: "progress", page: pages, prevPage: currentPage(bookEvents), source: "app" });
+  }
+  return { events, patch: { status: to } };
+}
+
+// --- Creating books -----------------------------------------------------------
+
+export function newBook({ synced = null, mine = {}, refs = {}, status = "want", queueKey = null, now }) {
+  return { id: bookId(), refs, status, queueKey, sharePin: null, prereqs: [], synced, mine, flags: {}, createdAt: now, updatedAt: now };
+}
+
+export function manualBook({ title, author, pages, year }, queueKey, now) {
+  const mine = {};
+  if (title) mine.title = title.trim();
+  if (author) mine.author = author.trim();
+  if (pages) mine.pages = +pages;
+  if (year) mine.year = +year;
+  const book = newBook({ mine, queueKey, now });
+  const events = [{ id: eventId(), bookId: book.id, at: now, type: "status", from: null, to: "want", source: "app" }];
+  return { book, events };
+}
+
+const SHELF_STATUS = { "to-read": "want", "currently-reading": "reading", read: "read" };
+
+function syncedFrom(inc, source, now) {
+  const { goodreadsBookId, ...facts } = inc;
+  return { ...facts, source, syncedAt: now };
+}
+
+function bookFromIncoming(inc, queueKey, source, now) {
+  const status = SHELF_STATUS[inc.shelf];
+  const book = newBook({
+    synced: syncedFrom(inc, source, now),
+    refs: { goodreadsBookId: inc.goodreadsBookId, goodreadsWorkId: inc.workId || null, isbn13: inc.isbn13 || null },
+    status, queueKey, now,
+  });
+  const ev = (at, extra) => ({ id: eventId(), bookId: book.id, at, source, approx: true, ...extra });
+  const added = dateToAt(inc.dateAdded) || now;
+  const events = [ev(added, { type: "status", from: null, to: "want" })];
+  if (status === "reading" || inc.dateStarted) {
+    events.push(ev(dateToAt(inc.dateStarted) || added, { type: "status", from: "want", to: "reading" }));
+  }
+  if (status === "read") {
+    const at = dateToAt(inc.dateRead) || added;
+    const from = events.at(-1).to;
+    if (inc.pages) events.push(ev(at, { type: "progress", page: inc.pages, prevPage: 0 }));
+    events.push(ev(at, { type: "status", from, to: "read" }));
+  }
+  return { book, events };
+}
+
+// --- Matching and import planning ---------------------------------------------
+
+export function normTitle(s) {
+  return (s || "")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\(.*?\)/g, " ")
+    .split(/[:;]/)[0]
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/^\s*(the|a|an)\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function normAuthor(s) {
+  const words = (s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z ]/g, " ").trim().split(/\s+/);
+  return words.at(-1) || "";
+}
+
+const SAME_FACTS = (a, b) => {
+  const strip = o => { const { syncedAt, ...rest } = o || {}; return JSON.stringify(Object.entries(rest).sort()); };
+  return strip(a) === strip(b);
+};
+
+/**
+ * Plan an import of incoming Goodreads facts against the library.
+ * Never overwrites `mine`, never deletes. Returns what would change.
+ */
+export function planImport(books, incoming, { now, source = "goodreads-csv", shelves = IMPORT_SHELVES } = {}) {
+  const plan = { creates: [], updates: [], asks: [], gone: [], back: [], skipped: {}, unchanged: 0 };
+  const byGr = new Map(books.filter(b => b.refs?.goodreadsBookId).map(b => [b.refs.goodreadsBookId, b]));
+  const byIsbn = new Map(books.filter(b => b.refs?.isbn13).map(b => [b.refs.isbn13, b]));
+  const byWork = new Map(books.filter(b => b.refs?.goodreadsWorkId).map(b => [b.refs.goodreadsWorkId, b]));
+  const fuzzyKey = b => { const e = effective(b); return `${normTitle(e.title)}|${normAuthor(e.author)}`; };
+  const byFuzzy = new Map(books.map(b => [fuzzyKey(b), b]));
+  const seen = new Set();
+  const wanted = [];
+
+  for (const inc of incoming) {
+    if (!shelves.includes(inc.shelf)) { plan.skipped[inc.shelf] = (plan.skipped[inc.shelf] || 0) + 1; continue; }
+    if (seen.has(inc.goodreadsBookId)) continue;
+    seen.add(inc.goodreadsBookId);
+
+    const existing = byGr.get(inc.goodreadsBookId) || (inc.isbn13 && byIsbn.get(inc.isbn13));
+    if (existing) {
+      const synced = { ...existing.synced, ...syncedFrom(inc, source, now) };
+      const refs = { ...existing.refs, goodreadsBookId: inc.goodreadsBookId, goodreadsWorkId: inc.workId || existing.refs.goodreadsWorkId || null, isbn13: inc.isbn13 || existing.refs.isbn13 || null };
+      if (SAME_FACTS(existing.synced, synced) && JSON.stringify(refs) === JSON.stringify(existing.refs)) plan.unchanged++;
+      else plan.updates.push({ id: existing.id, synced, refs });
+      if (existing.flags?.goneFromGoodreads) plan.back.push(existing.id);
+      continue;
+    }
+    const sameWork = inc.workId && byWork.get(inc.workId);
+    if (sameWork) { plan.asks.push({ kind: "edition", incoming: inc, matchId: sameWork.id }); continue; }
+    const fuzzy = byFuzzy.get(`${normTitle(inc.title)}|${normAuthor(inc.author)}`);
+    if (fuzzy) { plan.asks.push({ kind: "same-book", incoming: inc, matchId: fuzzy.id }); continue; }
+    wanted.push(inc);
+  }
+
+  // New books: want-list in Goodreads order (shelf position, then date added), after the existing queue.
+  const lastKey = books.map(b => b.queueKey).filter(Boolean).sort(compareKeys).at(-1) || null;
+  const order = (a, b) => (a.position ?? 1e9) - (b.position ?? 1e9) || (a.dateAdded || "").localeCompare(b.dateAdded || "");
+  const queued = wanted.filter(i => i.shelf !== "read").sort(order);
+  const keys = keysBetween(lastKey, null, queued.length);
+  queued.forEach((inc, i) => plan.creates.push(bookFromIncoming(inc, keys[i], source, now)));
+  wanted.filter(i => i.shelf === "read").forEach(inc => plan.creates.push(bookFromIncoming(inc, null, source, now)));
+
+  // Books that came from Goodreads but are no longer on an imported shelf: flag, never delete.
+  for (const b of books) {
+    const id = b.refs?.goodreadsBookId;
+    if (id && !seen.has(id) && !b.flags?.goneFromGoodreads && (b.status === "want" || b.status === "reading")) plan.gone.push(b.id);
+  }
+  return plan;
+}
+
+/** Resolve an ask: "link" makes the incoming facts update the matched book; "add" creates a new book. */
+export function resolveAsk(ask, choice, books, { now, source = "goodreads-csv" }) {
+  if (choice === "link") {
+    const b = books.find(x => x.id === ask.matchId);
+    return { updates: [{ id: b.id, synced: { ...b.synced, ...syncedFrom(ask.incoming, source, now) },
+      refs: { ...b.refs, goodreadsBookId: ask.incoming.goodreadsBookId, isbn13: ask.incoming.isbn13 || b.refs.isbn13 || null } }], creates: [] };
+  }
+  if (choice === "add") {
+    const lastKey = books.map(x => x.queueKey).filter(Boolean).sort(compareKeys).at(-1) || null;
+    const key = ask.incoming.shelf === "read" ? null : keysBetween(lastKey, null, 1)[0];
+    return { updates: [], creates: [bookFromIncoming(ask.incoming, key, source, now)] };
+  }
+  return { updates: [], creates: [] };
+}
+
+// --- Archives (export, import, merge) ------------------------------------------
+
+export function makeArchive({ books, events, tombstones, settings }, now) {
+  return { format: "antilibrary-archive", schemaVersion: SCHEMA_VERSION, exportedAt: now, books, events, tombstones, settings };
+}
+
+export function validateArchive(a) {
+  if (!a || a.format !== "antilibrary-archive") return "This isn't an Antilibrary backup file.";
+  if (typeof a.schemaVersion !== "number") return "The backup has no version number.";
+  if (a.schemaVersion > SCHEMA_VERSION) return "This backup was made by a newer version of Antilibrary. Update the app first.";
+  for (const k of ["books", "events"]) if (!Array.isArray(a[k])) return `The backup is missing its ${k}.`;
+  return null;
+}
+
+/** Union of two archives: newer book records win, events and deletions are unioned. */
+export function mergeArchives(local, remote) {
+  const tomb = new Map([...(local.tombstones || []), ...(remote.tombstones || [])].map(t => [t.id, t]));
+  const books = new Map(local.books.map(b => [b.id, b]));
+  let booksAdded = 0, booksUpdated = 0, eventsAdded = 0;
+  for (const b of remote.books) {
+    if (tomb.has(b.id)) continue;
+    const mine = books.get(b.id);
+    if (!mine) { books.set(b.id, b); booksAdded++; }
+    else if ((b.updatedAt || "") > (mine.updatedAt || "")) { books.set(b.id, b); booksUpdated++; }
+  }
+  for (const id of tomb.keys()) books.delete(id);
+  const events = new Map(local.events.map(e => [e.id, e]));
+  for (const e of remote.events) if (!events.has(e.id)) { events.set(e.id, e); eventsAdded++; }
+  for (const id of tomb.keys()) events.delete(id);
+  for (const [id, e] of events) if (e.bookId && !books.has(e.bookId)) events.delete(id);
+  const settings = (remote.settings?.updatedAt || "") > (local.settings?.updatedAt || "") ? remote.settings : local.settings;
+  return {
+    books: [...books.values()], events: [...events.values()].sort(byTime), tombstones: [...tomb.values()], settings,
+    stats: { booksAdded, booksUpdated, eventsAdded },
+  };
+}
+
+/** Queue order for want-list books. */
+export const byQueue = (a, b) => compareKeys(a.queueKey || "~", b.queueKey || "~");
