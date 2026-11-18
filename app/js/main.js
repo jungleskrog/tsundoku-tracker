@@ -522,7 +522,7 @@ function viewSettings() {
 
     <section><h2 class="sc small">Library</h2>
       <p><a href="#/import">Import from Goodreads</a> · <a href="#/add">Add a book by hand</a></p>
-      <p class="quiet small">Antilibrary · data version ${SCHEMA_VERSION}</p>
+      <p class="quiet small">Antilibrary ${APP_VERSION} · data version ${SCHEMA_VERSION}</p>
     </section>`;
 }
 
@@ -745,8 +745,14 @@ document.addEventListener("change", e => {
 window.addEventListener("hashchange", () => { S.confirm = null; render(); window.scrollTo(0, 0); });
 window.addEventListener("focus", () => { if (S.ready && S.auto.state === "granted") guard(syncWithAutoFile()); });
 
+export const APP_VERSION = "0.3 (Stage 3: the model)";
+
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  // When a new version takes over, reload once so you see it straight away.
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register("./sw.js").then(r => r.update()).catch(() => {});
 }
 
 window.__antilibrary = S; // for debugging and browser tests

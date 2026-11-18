@@ -1,6 +1,7 @@
-// Offline cache. App files: serve from cache, refresh in the background.
+// Offline cache. App files: always try the network first (so updates show at once),
+// fall back to the cached copy when offline.
 // Covers: cache on first view. Bump VERSION when the file list changes.
-const VERSION = "antilibrary-v2";
+const VERSION = "antilibrary-v3";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css", "css/fonts.css",
   "js/main.js", "js/store.js", "js/backup.js", "js/domain.js", "js/keys.js", "js/ids.js", "js/csv.js", "js/format.js", "js/migrations.js", "js/model.js",
@@ -9,7 +10,7 @@ const SHELL = [
 ];
 
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", e => {
@@ -22,9 +23,13 @@ self.addEventListener("fetch", e => {
   const url = new URL(req.url);
   if (url.origin === location.origin) {
     e.respondWith(caches.open(VERSION).then(async cache => {
-      const hit = await cache.match(req, { ignoreSearch: true });
-      const fresh = fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); return res; }).catch(() => hit);
-      return hit || fresh;
+      try {
+        const res = await fetch(req, { cache: "no-cache" });
+        if (res.ok) cache.put(req, res.clone());
+        return res;
+      } catch {
+        return (await cache.match(req, { ignoreSearch: true })) || Response.error();
+      }
     }));
   } else if (/gr-assets\.com|goodreads\.com|openlibrary\.org/.test(url.hostname) && req.destination === "image") {
     e.respondWith(caches.open("covers").then(async cache => {
