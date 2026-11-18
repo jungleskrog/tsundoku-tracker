@@ -1,0 +1,6 @@
+# personal data never goes in the repo
+spike/*.json
+spike/*.html
+*.csv
+__pycache__/
+.DS_Store
