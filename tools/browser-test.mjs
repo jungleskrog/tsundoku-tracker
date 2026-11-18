@@ -13,7 +13,8 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CSV = opt("--csv") || join(ROOT, "tests/fixtures/goodreads-sample.csv");
 const SHOTS = opt("--shots");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 8732, DEBUG = 9333, BASE = `http://localhost:${PORT}`;
+const HELPER = args.includes("--helper");
+const PORT = HELPER ? 8731 : 8732, DEBUG = 9333, BASE = `http://localhost:${PORT}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const server = await serve(PORT);
@@ -76,7 +77,10 @@ try {
   // 2. The app, end to end
   await go(`${BASE}/`);
   await until("window.__antilibrary && window.__antilibrary.ready");
-  check((await text()).includes("An empty antilibrary"), "first run shows the welcome");
+  if (HELPER) {
+    await until("window.__antilibrary.books.size > 0", 20000);
+    check(true, `with the helper, the library arrives by itself (${await evaluate("window.__antilibrary.books.size")} books)`);
+  } else check((await text()).includes("An empty antilibrary"), "first run shows the welcome");
   await shot("1-welcome");
   await go(`${BASE}/#/import`);
   await until("!!document.querySelector('input[data-change=csv]')");
@@ -84,7 +88,7 @@ try {
   await until("document.body.innerText.includes('What this import will do')");
   await shot("2-import-plan");
   const plan = await evaluate("({ creates: window.__antilibrary.plan.creates.length, asks: window.__antilibrary.plan.asks.length })");
-  check(plan.creates > 0, `import plan: ${plan.creates} new books, ${plan.asks} questions`);
+  check(HELPER ? plan.asks === 0 : plan.creates > 0, `import plan: ${plan.creates} new books, ${plan.asks} questions`);
   await click("[data-act=apply-import]");
   await until("window.__antilibrary.books.size > 0 && location.hash === '#/'");
   const reading = await evaluate("[...window.__antilibrary.books.values()].filter(b => b.status === 'reading').length");
@@ -150,6 +154,27 @@ try {
   await go(`${BASE}/#/settings`); await until("!!document.getElementById('snapshots')"); await sleep(300);
   check((await text()).includes("before a Goodreads import"), "a copy was kept before each import");
   await shot("6-settings");
+
+  // with the Mac helper running (only when asked: npm run test:browser -- --helper)
+  if (HELPER) {
+    await go(`${BASE}/#/settings`);
+    await until("document.body.innerText.includes('The Mac helper')");
+    await until("document.body.innerText.includes('Connected')", 15000);
+    check(true, "the app finds the helper");
+    await until("[...window.__antilibrary.books.values()].some(b => b.synced && b.synced.coverUrl)", 20000);
+    const covers = await evaluate("[...window.__antilibrary.books.values()].filter(b => b.synced && b.synced.coverUrl).length");
+    check(covers > 0, `covers arrive from the helper (${covers} books)`);
+    const quotes = await evaluate("[...window.__antilibrary.books.values()].filter(b => b.synced && b.synced.quote).length");
+    check(true, `quotes so far: ${quotes}`);
+    const withQuote = await evaluate("([...window.__antilibrary.books.values()].find(b => b.synced && b.synced.quote && !('annotation' in (b.mine || {}))) || {}).id || null");
+    if (withQuote) {
+      await go(`${BASE}/#/book/${withQuote}`); await until("!!document.querySelector('.record')");
+      check(!!(await evaluate("document.querySelector('.epigraph') && document.querySelector('.epigraph').textContent.length > 3")), "a Goodreads quote becomes the default annotation");
+    }
+    await go(`${BASE}/#/`); await until("!!document.querySelector('.entry')"); await sleep(800);
+    await shot("9-desk-helper");
+    await go(`${BASE}/#/settings`); await until("document.body.innerText.includes('Difficulty scores')"); await shot("10-settings-helper");
+  }
 
   // phone width
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });

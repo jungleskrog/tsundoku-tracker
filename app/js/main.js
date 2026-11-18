@@ -8,6 +8,7 @@ import {
 } from "./domain.js";
 import { migrate } from "./migrations.js";
 import * as M from "./model.js";
+import * as H from "./helper.js";
 import { csvObjects, goodreadsRows, isGoodreadsExport } from "./csv.js";
 import { keysBetween, compareKeys } from "./keys.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
@@ -16,6 +17,7 @@ const S = {
   books: new Map(), events: [], tombstones: [], settings: null, byBook: new Map(),
   auto: { handle: null, state: null, lastWrite: null }, notice: null, plan: null, planSource: null,
   pendingArchive: null, confirm: null, query: "", ready: false, error: null,
+  helper: { connected: false, status: null, estimate: null, asks: [] },
 };
 
 const now = () => new Date().toISOString();
@@ -137,6 +139,113 @@ async function syncWithAutoFile() {
   await writeAutoNow();
 }
 
+// --- The Mac helper ------------------------------------------------------------------
+
+let helperPoll = null;
+
+/** Look for the helper; if it's there, bring in what it has. Never blocks the app. */
+async function connectHelper() {
+  try {
+    S.helper.status = await H.status();
+    S.helper.connected = true;
+  } catch {
+    S.helper.connected = false;
+    S.helper.status = null;
+    return render();
+  }
+  await pullFromHelper();
+  watchHelper();
+}
+
+function watchHelper() {
+  clearTimeout(helperPoll);
+  if (!S.helper.connected) return;
+  const busy = S.helper.status?.job || S.helper.status?.queued;
+  helperPoll = setTimeout(async () => {
+    const wasBusy = busy;
+    try { S.helper.status = await H.status(); } catch { S.helper.connected = false; render(); return; }
+    if (wasBusy && !S.helper.status.job && !S.helper.status.queued) await pullFromHelper();
+    else if (route()[0] === "settings") render();
+    watchHelper();
+  }, busy ? 2500 : 60000);
+}
+
+/** Shelves (new books, changes) and the catalogue (covers, quotes, scores) from the helper. */
+async function pullFromHelper() {
+  const t = now();
+  const shelf = await H.shelves().catch(() => null);
+  if (shelf && shelf.synced_at && shelf.synced_at !== (await store.getMeta("helperShelvesApplied"))) {
+    const plan = planImport(books(), H.incomingFromShelves(shelf), { now: t, source: "goodreads-helper" });
+    const putBooks = [
+      ...plan.creates.map(c => c.book),
+      ...plan.updates.map(u => patchBook(S.books.get(u.id), { synced: u.synced, refs: u.refs }, t)),
+      ...plan.gone.map(id => patchBook(S.books.get(id), { flags: { ...S.books.get(id).flags, goneFromGoodreads: t } }, t)),
+      ...plan.back.map(id => patchBook(S.books.get(id), { flags: { ...S.books.get(id).flags, goneFromGoodreads: null } }, t)),
+    ];
+    S.helper.asks = plan.asks;
+    if (putBooks.length) {
+      if (plan.creates.length > 5) await store.snapshot("before a Goodreads sync", archive());
+      await commit({ books: putBooks, events: plan.creates.flatMap(c => c.events) });
+    }
+    if (plan.creates.length || plan.gone.length) {
+      const bits = [plan.creates.length && plural(plan.creates.length, "new book"), plan.gone.length && `${plan.gone.length} no longer on Goodreads`].filter(Boolean);
+      S.notice = `From Goodreads: ${bits.join(", ")}.`;
+    }
+    await store.setMeta("helperShelvesApplied", shelf.synced_at);
+  }
+  const cat = await H.catalogue().catch(() => null);
+  if (cat) {
+    const putBooks = [];
+    for (const b of books()) {
+      const e = cat.entries[H.keyOf(b)];
+      if (!e) continue;
+      const d = e.details || {}, s = b.synced || {};
+      const synced = { ...s };
+      if (d.coverUrl && !s.coverUrl) synced.coverUrl = d.coverUrl;
+      if (e.quote && e.quote.text && s.quote !== e.quote.text) synced.quote = e.quote.text;
+      if (!s.pages && d.pages) synced.pages = d.pages;
+      if (!s.year && d.year) synced.year = d.year;
+      if (!s.publisher && d.publisher) synced.publisher = d.publisher;
+      const refs = d.workId && !b.refs?.goodreadsWorkId ? { ...b.refs, goodreadsWorkId: d.workId } : b.refs;
+      const score = e.score || b.score || null;
+      if (JSON.stringify(synced) !== JSON.stringify(s) || refs !== b.refs || JSON.stringify(score) !== JSON.stringify(b.score || null)) {
+        putBooks.push(patchBook(b, { synced, refs, score }, t));
+      }
+    }
+    if (putBooks.length) await commit({ books: putBooks });
+  }
+  render();
+}
+
+function unscored() {
+  return books().filter(b => b.status !== "abandoned" && !b.score && effective(b).title);
+}
+
+function helperBlock() {
+  const h = S.helper, st = h.status;
+  if (!h.connected) {
+    return html`<p>Not found on this computer. The helper is optional: it brings in your Goodreads shelves, covers and quotes by itself, and scores each book's difficulty.
+      <span class="quiet small">See the README to install it on a Mac; everything else works without it.</span>
+      <button class="link" data-act="helper-retry">Look again</button></p>`;
+  }
+  const job = st.job ? `${{ sync: "Reading your Goodreads shelves", enrich: "Fetching Goodreads quotes, a few an hour", score: "Scoring difficulty" }[st.job.kind]}: ${st.job.done} of ${st.job.total || "…"}${st.job.kind === "score" && st.job.spent != null ? ` ($${st.job.spent.toFixed(3)} so far)` : ""}` : null;
+  const scored = books().filter(b => b.score).length, todo = unscored().length;
+  const e = h.estimate;
+  return html`
+    <p>Connected${st.goodreads_user_id ? `, Goodreads account ${st.goodreads_user_id}` : ""}. ${st.synced_at ? `Shelves last read ${relativeDay(st.synced_at)}.` : "Shelves not read yet."}
+      ${st.signed_in === false ? raw('<b>Goodreads asked to sign in: open goodreads.com in Chrome and sign in.</b>') : ""}</p>
+    ${job ? html`<p class="notice quiet">${job}…</p>` : html`<p><button data-act="helper-sync">Read Goodreads now</button></p>`}
+    ${st.last_error ? html`<p class="notice">${st.last_error}</p>` : ""}
+    ${h.asks.length ? html`<p class="notice">${plural(h.asks.length, "book")} from Goodreads ${h.asks.length === 1 ? "looks" : "look"} like one you already have. <button class="link" data-act="helper-asks">Decide</button></p>` : ""}
+    <h3 class="sc small">Difficulty scores</h3>
+    <p>${scored} of ${scored + todo} books scored${todo ? `; ${todo} waiting` : ""}. Scores come from ${st.model === "claude-haiku-5-5" ? "Claude Haiku 5.5" : st.model}, the cheapest model, checked before they're kept.
+      ${st.spent_usd ? raw(`<span class="quiet small">Spent so far: $${st.spent_usd.toFixed(3)}.</span>`) : ""}</p>
+    ${!st.scoring_ready ? html`<p class="quiet">The helper has no Claude API key, so it can't score yet (see the README).</p>`
+      : todo && !(st.job && st.job.kind === "score") ? (e ? html`<p class="notice">Scoring ${plural(e.books, "book")} should cost about <b>$${e.usd.toFixed(2)}</b>${e.learned ? "" : " (a first estimate)"}. It stops by itself if it reaches $${e.cap.toFixed(2)}.
+            <button data-act="helper-score">Score them</button> <button class="link" data-act="helper-estimate-cancel">Not now</button></p>`
+          : html`<p><button data-act="helper-estimate">What would scoring ${todo === 1 ? "it" : `the ${todo}`} cost?</button></p>`) : ""}`;
+}
+
 // --- Start-up -----------------------------------------------------------------------
 
 async function boot() {
@@ -164,6 +273,7 @@ async function boot() {
       if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
     S.ready = true;
+    connectHelper();
   } catch (e) {
     S.error = e.message || String(e);
   }
@@ -220,6 +330,7 @@ function deskEntry(b) {
   const undo = [...evs(b.id)].reverse().find(x => x.type === "progress" && x.source === "app");
   const done = e.pages && page >= e.pages;
   return html`<article class="entry">
+    ${coverImg(b, "thumb")}
     <a class="t" href="#/book/${b.id}">${e.title}</a>
     <div class="a sc">${[e.author, e.year].filter(Boolean).join(" · ")}</div>
     ${progressRule(page, e.pages)}
@@ -347,7 +458,7 @@ function viewBook(id) {
   return html`
     <div class="dateline sc"><span>${STATUS_LABEL[b.status]}</span><a href="#/list">The List</a></div>
     <article class="record">
-      ${e.coverUrl ? html`<img class="cover" src="${e.coverUrl}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
+      ${coverImg(b, "cover")}
       <h1 class="t">${e.title}</h1>
       <p class="a sc">${e.author}</p>
       ${e.annotation ? html`<blockquote class="epigraph">${e.annotation}</blockquote>` : ""}
@@ -365,6 +476,7 @@ function viewBook(id) {
         ${b.refs?.goodreadsBookId ? html`<dt>Goodreads</dt><dd><a href="https://www.goodreads.com/book/show/${b.refs.goodreadsBookId}" target="_blank" rel="noopener">book ${b.refs.goodreadsBookId}</a></dd>` : ""}
       </dl>
       <p class="actions">${actions.map(([to, label]) => html`<button data-act="status" data-id="${id}" data-to="${to}">${label}</button>`)}</p>
+      ${whyBlock(b)}
       ${b.flags?.goneFromGoodreads ? html`<p class="notice quiet">This book is no longer on your Goodreads Want to Read or Currently Reading shelves (noticed ${shortDate(b.flags.goneFromGoodreads)}). It stays here until you decide.
         <button class="link" data-act="clear-flag" data-id="${id}">Keep it</button></p>` : ""}
 
@@ -395,6 +507,32 @@ function viewBook(id) {
            <button data-act="delete" data-id="${id}">Remove it</button> <button class="link" data-act="cancel">Keep it</button>`
         : html`<button class="link" data-act="ask-delete" data-id="${id}">Remove from the library…</button>`}</p>
     </article>`;
+}
+
+/** The book's cover: Goodreads' if known, else Open Library's by ISBN (hidden if it has none). */
+function coverImg(b, cls) {
+  const e = effective(b);
+  const src = e.coverUrl || (b.refs?.isbn13 ? `https://covers.openlibrary.org/b/isbn/${b.refs.isbn13}-M.jpg?default=false` : null);
+  if (!src) return "";
+  return html`<img class="${cls}" src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
+}
+
+const COMPONENT_LABEL = { lexical: "Vocabulary", syntactic: "Sentences", conceptual: "Ideas", structural: "Structure" };
+
+function whyBlock(b) {
+  const sc = b.score;
+  if (!sc || !sc.components) return "";
+  const p = derived().p;
+  const { pages } = effective(b);
+  const D = M.difficultyOf({ ...b, mine: {} }, p).D;
+  return html`<details class="why"><summary>Why difficulty ${Math.round(D * 10) / 10}${b.mine?.difficulty != null ? " (before your figure)" : ""}</summary>
+    <dl class="colophon">${Object.entries(sc.components).map(([k, c]) => html`<dt>${COMPONENT_LABEL[k] || k}</dt><dd>${c.score} · ${c.reason}</dd>`)}
+      <dt>Content</dt><dd>${sc.C}${sc.content_reason ? ` · ${sc.content_reason}` : ""}</dd>
+      <dt>Length</dt><dd>about ${Math.round(sc.words / 1000) * 1000} words${pages ? `, so about ${Math.round(sc.words / pages)} a page in your edition` : ""} <span class="quiet small">(${sc.words_basis})</span></dd>
+    </dl>
+    ${sc.flags && sc.flags.length ? html`<p class="notice quiet">${sc.flags.join("; ")}.</p>` : ""}
+    <p class="quiet small">Difficulty is reading effort, not merit: how slowly a page of this text goes. Scored by ${sc.model === "claude-haiku-5-5" ? "Claude Haiku 5.5" : sc.model} on ${shortDate(sc.scored_at)}. If it feels wrong, set your own figure below.</p>
+  </details>`;
 }
 
 function diffText(b) {
@@ -522,6 +660,8 @@ function viewSettings() {
       <p class="quiet small">A page of difficulty 1 takes about ${M.minutesPerPage(1, derived().p).toFixed(2)} minutes; difficulty 10, about ${M.minutesPerPage(10, derived().p).toFixed(1)}.</p>
     </section>
 
+    <section><h2 class="sc small">The Mac helper</h2>${helperBlock()}</section>
+
     <section><h2 class="sc small">Library</h2>
       <p><a href="#/import">Import from Goodreads</a> · <a href="#/add">Add a book by hand</a></p>
       <p class="quiet small">Antilibrary ${APP_VERSION} · data version ${SCHEMA_VERSION}</p>
@@ -581,6 +721,29 @@ async function act(name, d) {
       await commit({ events: r.events, books: [patchBook(b, patch, t)] });
       if (d.to === "read") S.notice = `Finished: ${effective(b).title}.`;
       return render();
+    }
+    case "helper-retry": return connectHelper();
+    case "helper-sync": await H.sync(); S.helper.status = await H.status(); render(); return watchHelper();
+    case "helper-estimate": {
+      const list = unscored();
+      const e = await H.estimate(list.map(b => ({ key: H.keyOf(b) })));
+      S.helper.estimate = { ...e, cap: Math.max(0.05, Math.ceil(e.usd * 1.5 * 100) / 100) };
+      return render();
+    }
+    case "helper-estimate-cancel": S.helper.estimate = null; return render();
+    case "helper-score": {
+      const list = unscored().map(b => { const e = effective(b); return { key: H.keyOf(b), title: e.title, author: e.author, year: e.year, pages: e.pages, isbn13: b.refs?.isbn13 || null }; });
+      await H.score(list, S.helper.estimate.cap);
+      S.helper.estimate = null;
+      S.helper.status = await H.status();
+      render();
+      return watchHelper();
+    }
+    case "helper-asks": {
+      S.plan = { creates: [], updates: [], asks: S.helper.asks, gone: [], back: [], skipped: {}, unchanged: 0 };
+      S.helper.asks = [];
+      location.hash = "#/import";
+      return;
     }
     case "unpin": return commit({ books: [patchBook(b, { sharePin: null }, t)] });
     case "clear-flag": return commit({ books: [patchBook(b, { flags: { ...b.flags, goneFromGoodreads: null } }, t)] });
@@ -745,9 +908,12 @@ document.addEventListener("change", e => {
   if (e.target.dataset.change) guard(change(e.target));
 });
 window.addEventListener("hashchange", () => { S.confirm = null; render(); window.scrollTo(0, 0); });
-window.addEventListener("focus", () => { if (S.ready && S.auto.state === "granted") guard(syncWithAutoFile()); });
+window.addEventListener("focus", () => {
+  if (S.ready && S.auto.state === "granted") guard(syncWithAutoFile());
+  if (S.ready && S.helper.connected) guard(pullFromHelper());
+});
 
-export const APP_VERSION = "0.3.1 (Stage 3: the model)";
+export const APP_VERSION = "0.4 (Stage 4: the Mac helper)";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

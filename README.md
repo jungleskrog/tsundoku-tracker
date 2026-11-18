@@ -28,3 +28,12 @@ No build step and no dependencies: plain ES modules in `app/`.
     tests/          tests and a made-up Goodreads export
 
 Font: Source Serif 4 (SIL Open Font License, `app/fonts/OFL.txt`).
+
+## The Mac helper (optional)
+
+A small background service that reads your Goodreads shelves through Chrome's existing login, fetches each book's most-liked quote (a few an hour, to stay gentle), and scores difficulty with the Claude API when you ask in Settings (after a cost estimate). It listens only on 127.0.0.1:8749 and answers only the Antilibrary app.
+
+    cd helper && ./install.sh        # login item + the `antilibrary-helper` command
+    antilibrary-helper status | restart | logs
+
+Needs [uv](https://docs.astral.sh/uv/), Chrome signed in to Goodreads, and (for scores) `export ANTHROPIC_API_KEY=…` in `~/.zshrc`. Data lives in `~/Library/Application Support/Antilibrary`. Other users' own app addresses can be allowed with `ANTILIBRARY_ORIGINS`.

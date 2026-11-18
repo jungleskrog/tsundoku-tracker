@@ -28,6 +28,10 @@ class SignedOut(GoodreadsError):
     pass
 
 
+class Throttled(GoodreadsError):
+    """Goodreads' firewall asked for a browser challenge: back off for hours."""
+
+
 def chrome_cookie_header(browser: str = "chrome") -> str:
     from yt_dlp.cookies import extract_cookies_from_browser
     jar = extract_cookies_from_browser(browser)
@@ -55,6 +59,8 @@ class Session:
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 final = r.geturl()
+                if r.status == 202 or r.headers.get("x-amzn-waf-action"):
+                    raise Throttled("Goodreads is asking for a browser check; pausing for a few hours.")
                 body = r.read().decode("utf-8", "replace")
         finally:
             self._last = time.monotonic()

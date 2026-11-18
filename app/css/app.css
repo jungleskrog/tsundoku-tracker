@@ -158,3 +158,13 @@ form.stack fieldset.days label { display: inline-flex; flex-direction: row; gap:
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 1.05em; height: 1.05em; min-height: 0; margin: 0; }
 form.stack input[type="number"], details.edit input[type="number"] { max-width: 9em; }
 form.stack select { max-width: 22rem; }
+
+/* Covers and the difficulty explanation */
+.entry .thumb { float: right; width: 46px; margin: 2px 0 8px 16px; border: 1px solid var(--rule); background: var(--panel); }
+.entry .row, .entry .when, .entry .fin { clear: right; }
+details.why { margin: 0 0 24px; }
+details.why summary { cursor: pointer; color: var(--accent); }
+details.why dl.colophon { margin-top: 12px; }
+details.why dd { font-size: .92rem; }
+.entry:has(.thumb) .rule { margin-right: 62px; }
+h3.small { font-weight: 400; font-size: .85rem; color: var(--quiet); margin: 22px 0 6px; }
