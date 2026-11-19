@@ -30,7 +30,7 @@ const S = {
   menu: null, listNote: null, undoOrder: null, focusRow: null,
   bmHref: null, bmInbox: [], paste: false,
   noteFor: null, letterSeen: null, openRow: null, edPanel: null,
-  timer: null, stopping: null, prevModel: null,
+  timer: null, stopping: null, prevModel: null, listSort: "custom",
   sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false },
 };
 
@@ -566,6 +566,7 @@ async function boot() {
     }
     S.letterSeen = await store.getMeta("letterSeen");
     S.timer = (await store.getMeta("timer")) || null;
+    S.listSort = (await store.getMeta("listSort")) || "custom";
     S.sync.rec = (await store.getMeta("gdrive")) || null;
     S.sync.last = (await store.getMeta("gdriveLast")) || null;
     if (S.sync.rec?.on) S.sync.state = "on";
@@ -805,7 +806,7 @@ function deskRow(b) {
     <span class="prog">${page ? `p. ${page}${e.pages ? ` of ${e.pages.toLocaleString("en-GB")}` : ""}` : `not begun${e.pages ? ` · ${e.pages} pages` : ""}`}${fw && !done ? (fw.plain ? ` · ${fw.short}` : ` · finishes ${fw.short}`) : ""}
       ${undoToday ? html` · <button class="link" data-act="undo" data-id="${b.id}">Undo p. ${undo.prevPage} → ${undo.page}</button>` : ""}
       <button class="link more" data-act="row-more" data-id="${b.id}" aria-expanded="${open ? "true" : "false"}">${open ? "less" : "more"}</button>
-      ${!S.timer && !done ? html`<button class="link timego" data-act="timer-start" data-id="${b.id}" title="Time this reading session, so the app learns your pace">▶ time it</button>` : ""}
+      ${S.settings.showTimer && !S.timer && !done ? html`<button class="link timego" data-act="timer-start" data-id="${b.id}" title="Time this reading session, so the app learns your pace">▶ time it</button>` : ""}
       <span class="meter"><i style="${`width:${pct.toFixed(1)}%`}"></i></span></span>
     ${S.stopping?.bookId === b.id ? stopForm(b) : ""}
     ${open ? html`<div class="moreinfo">
@@ -864,10 +865,34 @@ function listRow(b, i) {
   </li>`;
 }
 
+// Ways to order The List. "custom" is your own order (the only one you can move books in);
+// the others are views that leave it untouched.
+const surname = a => { const w = (a || "").replace(/\(.*?\)/g, "").trim().split(/\s+/); return (w.at(-1) || "").toLowerCase(); };
+const finishedAt = b => bookDates(evs(b.id)).finished || "";
+const SORTS = {
+  custom: { label: "Your order" },
+  youth: { label: "Reading-youth", key: b => O.youthOf(b).youth ?? 999 },
+  difficulty: { label: "Difficulty, lightest first", key: b => M.difficultyOf(b, derived().p).D },
+  hardest: { label: "Difficulty, heaviest first", key: b => -M.difficultyOf(b, derived().p).D },
+  short: { label: "Length, shortest first", key: b => effective(b).pages || 1e6 },
+  long: { label: "Length, longest first", key: b => -(effective(b).pages || 0) },
+  title: { label: "Title", key: b => effective(b).title.toLowerCase().replace(/^(the|a|an) /, "") },
+  author: { label: "Author", key: b => surname(effective(b).author) + " " + effective(b).title.toLowerCase() },
+  published: { label: "First published, oldest first", key: b => effective(b).year ?? 9999 },
+  added: { label: "Added, newest first", key: b => -new Date(bookDates(evs(b.id)).added || b.createdAt || 0) },
+  finish: { label: "Finishing soonest", key: b => { const f = derived().fc.get(b.id); return f && f.finish != null && !f.beyond ? f.finish : 1e9; } },
+};
+function sortBy(list, mode) {
+  const s = SORTS[mode];
+  if (!s || !s.key) return list;
+  return list.map(b => [b, s.key(b)]).sort((x, y) => (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0)).map(([b]) => b);
+}
+
 function viewList() {
   const q = S.query.trim().toLowerCase();
   const match = b => { if (!q) return true; const e = effective(b); return `${e.title} ${e.author}`.toLowerCase().includes(q); };
-  const group = (status, sort) => books().filter(b => b.status === status).sort(sort);
+  const mode = SORTS[S.listSort] ? S.listSort : "custom";
+  const group = (status, sort) => { const l = books().filter(b => b.status === status).sort(sort); return mode === "custom" ? l : sortBy(l, mode); };
   const sections = [
     ["In hand", group("reading", byQueue)],
     ["Paused", group("paused", byQueue)],
@@ -882,12 +907,26 @@ function viewList() {
   };
   return html`
     <div class="dateline sc"><span>${plural(S.books.size, "volume")}</span><span>The List</span></div>
-    <form class="search" data-form="search" role="search"><label class="vh" for="q">Find a book</label>
+    <div class="listbar"><form class="search" data-form="search" role="search"><label class="vh" for="q">Find a book</label>
       <input id="q" name="q" type="search" placeholder="Find by title or author" value="${S.query}" autocomplete="off"></form>
+      <label class="sortby"><span class="sc small">Order by</span> <select data-change="list-sort">${Object.entries(SORTS).map(([k, v]) => html`<option value="${k}" ${k === mode ? raw("selected") : ""}>${v.label}</option>`)}</select></label></div>
     ${plain(sections[0])}
-    ${waitingBlock(match, !!q)}
+    ${mode === "custom" ? waitingBlock(match, !!q) : sortedWaiting(match, mode)}
     ${sections.slice(1).map(plain)}
     <p><a href="#/add">Add a book</a> · <a href="#/import">Import from Goodreads</a></p>`;
+}
+
+/** The waiting books in another order: a view only, numbered by your own order. */
+function sortedWaiting(match, mode) {
+  const list = waiting();
+  if (!list.length) return "";
+  const pos = new Map(list.map((b, i) => [b.id, i + 1]));
+  const shown = sortBy(list, mode).filter(match);
+  return html`<section class="waitingblock">
+    <h2 class="sc small">Waiting <span class="quiet">${list.length}</span></h2>
+    <p class="notice quiet small">Shown by ${SORTS[mode].label.toLowerCase()}. Your own order is kept as it was; the number beside each book is its place in it. To move books, choose <button class="link" data-act="sort-custom">Your order</button>.</p>
+    ${shown.length ? html`<ol class="shelf">${shown.map(b => listRow(b, pos.get(b.id)))}</ol>` : html`<p class="quiet">None match.</p>`}
+  </section>`;
 }
 
 // --- The waiting list: bands, Move to…, dragging, keys ------------------------------------
@@ -1539,15 +1578,18 @@ function viewImport() {
     <p class="quiet small">A copy of your library is kept first, so this can be undone from Settings › Earlier copies.</p>`;
 }
 
-/** What your timed sessions say about your speeds, and the offer to use them. */
+/** The reading timer: off unless you turn it on; what your sessions say only once they can say something. */
 function paceBlock() {
-  const p = derived().p, c = CB.calibrate(books(), S.byBook, p);
+  const p = derived().p, c = CB.calibrate(books(), S.byBook, p), on = !!S.settings.showTimer;
   const undo = S.prevModel ? html` <button class="link" data-act="undo-pace">Put back the previous pace</button>` : "";
-  if (!c) return html`<p class="small"><b>Your own pace.</b> Press <i>▶ time it</i> on a book on the Desk when you sit down to read, and <i>Stop</i> when you finish. After a few sessions, across easy and harder books, your measured speeds appear here to use in place of the model's.${undo}</p>`;
+  const toggle = html`<label class="small"><input type="checkbox" data-change="show-timer" ${on ? raw("checked") : ""}> Show a reading timer on the Desk</label>
+    <span class="quiet small">Optional. Timing a session now and then lets the app measure your own pace. Never using it changes nothing.</span>`;
+  if (!c) return html`<div class="pace">${toggle}${undo ? html`<p>${undo}</p>` : ""}</div>`;
+  if (!c.ready) return html`<div class="pace">${toggle}<p class="quiet small">${plural(c.n, "timed session")} so far: too few to say anything about your pace yet.${undo}</p></div>`;
   const same = Math.abs(c.v1 - p.v1) < 10 && Math.abs(c.v10 - p.v10) < 5;
-  const sure = { rough: "a first, rough reading", fair: "a fair reading", good: "a good reading" }[c.sure];
-  return html`<div class="pace notice quiet"><p><b>Your measured pace</b>, from ${plural(c.n, "timed session")} (about ${L.duration(c.minutes)}): about <b>${c.v1}</b> words a minute on easy prose and <b>${c.v10}</b> on dense text. That's ${sure}${c.spread < 3 ? "; time a book of a different difficulty to firm up the gap between easy and hard" : ""}.</p>
-    <p>${same ? "That's what the model uses now." : c.ready ? html`<button data-act="use-pace">Use these</button> <span class="small">(now ${p.v1} and ${p.v10}). Daily pages and finish dates follow; nothing else changes.</span>` : html`<span class="small">A couple more sessions and you can use it (now ${p.v1} and ${p.v10}).</span>`}${undo}</p></div>`;
+  const sure = { fair: "a fair reading", good: "a good reading" }[c.sure];
+  return html`<div class="pace">${toggle}<div class="notice quiet"><p><b>Your measured pace</b>, from ${plural(c.n, "timed session")} (about ${L.duration(c.minutes)}): about <b>${c.v1}</b> words a minute on easy prose and <b>${c.v10}</b> on dense text: ${sure}.</p>
+    <p>${same ? "That's what the model uses now." : html`<button data-act="use-pace">Use these</button> <span class="small">(now ${p.v1} and ${p.v10}). Daily pages and finish dates follow; nothing else changes.</span>`}${undo}</p></div></div>`;
 }
 
 function viewSettings() {
@@ -1714,6 +1756,7 @@ async function act(name, d) {
       S.notice = "The previous pace is back.";
       return commit({ settings: { ...S.settings, model: m, updatedAt: t } });
     }
+    case "sort-custom": S.listSort = "custom"; await store.setMeta("listSort", "custom"); return render();
     case "row-more": S.openRow = S.openRow === d.id ? null : d.id; return render();
     case "gs-installed": return commit({ settings: gsDone("installed") || S.settings });
     case "gs-show": return commit({ settings: { ...S.settings, gettingStarted: { ...(S.settings.gettingStarted || {}), show: true, dismissed: false }, updatedAt: t } });
@@ -2009,6 +2052,8 @@ async function change(el) {
   if (kind === "ask") { S.plan.asks[+el.dataset.i].choice = el.value; return; }
   if (kind === "autoscore") return; // saved with its form
   if (kind === "year") { location.hash = `#/year/${el.value}`; return; }
+  if (kind === "show-timer") return commit({ settings: { ...S.settings, showTimer: el.checked, updatedAt: now() } });
+  if (kind === "list-sort") { S.listSort = el.value; await store.setMeta("listSort", S.listSort); return render(); }
   const file = el.files?.[0];
   if (!file) return;
   try {
@@ -2129,7 +2174,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.4.0";
+export const APP_VERSION = "1.5.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

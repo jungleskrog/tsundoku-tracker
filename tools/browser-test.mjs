@@ -514,6 +514,10 @@ try {
   // 1.4: timed sessions teach your pace
   if (!HELPER) {
     const A = "window.__antilibrary";
+    await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
+    check(!(await evaluate("!!document.querySelector('[data-act=timer-start]')")), "the reading timer is off unless you turn it on");
+    await go(`${BASE}/#/settings`); await until("!!document.querySelector('[data-change=show-timer]')");
+    await evaluate("(() => { const c = document.querySelector('[data-change=show-timer]'); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); })()"); await sleep(300);
     await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
     let tid = await evaluate("(document.querySelector('[data-act=timer-start]') || {}).dataset?.id || null");
     if (!tid) { // nothing in hand: hold one for the check (in memory)
@@ -534,9 +538,24 @@ try {
     const pageNow = await evaluate(`(() => { let p = 0; for (const e of ${A}.byBook.get('${tid}') || []) if (e.type === 'progress') p = e.page; return p; })()`);
     check(pageNow === startPage + 20, "the session's pages are logged as reading");
     await go(`${BASE}/#/settings`); await until("!!document.querySelector('.pace')");
-    check(/Your measured pace/.test(await evaluate("document.querySelector('.pace').innerText")), "Settings shows your measured pace from the session");
+    check(/too few to say anything/.test(await evaluate("document.querySelector('.pace').innerText")) && !(await evaluate("!!document.querySelector('[data-act=use-pace]')")), "one session is too few: nothing is offered");
     await go(`${BASE}/#/book/${tid}`); await until("!!document.querySelector('.record')");
     check(/Timed: about [\d.]+ min a page over 1 session/.test(await text()), "the book shows your timed minutes a page beside the model's");
+  }
+
+  // 1.5: ordering The List
+  if (!HELPER) {
+    const A = "window.__antilibrary";
+    await go(`${BASE}/#/list`); await until("!!document.querySelector('[data-change=list-sort]')");
+    check(await evaluate("document.querySelector('[data-change=list-sort]').value") === "custom", "The List opens in your own order");
+    const keys = await evaluate(`[...${A}.books.values()].filter(b => b.status === 'want').map(b => b.id + b.queueKey).sort().join()`);
+    await evaluate("(() => { const s = document.querySelector('[data-change=list-sort]'); s.value = 'title'; s.dispatchEvent(new Event('change', { bubbles: true })); })()"); await sleep(300);
+    const titles = await evaluate("[...document.querySelectorAll('.waitingblock ol.shelf li a i')].map(i => i.textContent.toLowerCase().replace(/^(the|a|an) /, ''))");
+    check(titles.length > 1 && titles.every((t, i) => i === 0 || t >= titles[i - 1]), "ordering by title sorts the waiting books");
+    check((await text()).includes("Your own order is kept") && !(await evaluate("!!document.querySelector('li.row [data-act=menu]')")), "another order is a view: no moving, and it says so");
+    check(await evaluate(`[...${A}.books.values()].filter(b => b.status === 'want').map(b => b.id + b.queueKey).sort().join()`) === keys, "your own order is untouched");
+    await click("[data-act=sort-custom]"); await sleep(300);
+    check(await evaluate("!!document.querySelector('li.row [data-act=menu]')"), "back in your order, books can be moved again");
   }
 
   // phone width

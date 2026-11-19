@@ -8,7 +8,9 @@ import { effective } from "./domain.js";
 import { WPP_RANGE, minutesPerPage, difficultyOf } from "./model.js";
 
 export const MAX_MINUTES = 180;        // a timer left running longer than this is treated as forgotten
-export const MIN_SESSIONS = 3;         // before the app suggests new speeds
+export const MIN_SESSIONS = 5;         // before the app suggests new speeds…
+export const MIN_MINUTES = 120;        // …about two hours in all…
+export const MIN_SPREAD = 2;           // …across books at least two difficulty points apart
 
 /** All timed sessions: events of type "session" { minutes, fromPage, toPage, capped }. */
 export function sessionsOf(books, byBook) {
@@ -51,8 +53,9 @@ export function calibrate(books, byBook, p, { prior = 2 } = {}) {
   v10 = Math.round(Math.min(Math.min(400, v1 - 10), Math.max(20, v10)));
   const Cs = obs.map(o => o.C);
   const spread = Math.max(...Cs) - Math.min(...Cs);
-  const sure = obs.length >= 8 && spread >= 3 ? "good" : obs.length >= MIN_SESSIONS ? "fair" : "rough";
-  return { v1, v10, n: obs.length, minutes: Math.round(minutes), spread, sure, ready: obs.length >= MIN_SESSIONS };
+  const ready = obs.length >= MIN_SESSIONS && minutes >= MIN_MINUTES && spread >= MIN_SPREAD;
+  const sure = ready && obs.length >= 8 && spread >= 3 ? "good" : ready ? "fair" : "rough";
+  return { v1, v10, n: obs.length, minutes: Math.round(minutes), spread, sure, ready };
 }
 
 /** Your measured minutes a page in one book, beside the model's. */
