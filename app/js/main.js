@@ -123,16 +123,29 @@ function scheduleAutoBackup() {
   autoTimer = setTimeout(writeAutoNow, 1500);
 }
 
+/** Chrome can withdraw a file's permission at any time (after a while, or in the background): ask again quietly. */
+const lostPermission = e => e && (e.name === "NotAllowedError" || e.name === "SecurityError" || /not allowed/i.test(e.message || ""));
+
 async function writeAutoNow() {
+  if (S.auto.state !== "granted") return;
   try {
     await backup.writeAuto(S.auto.handle, archive());
     S.auto.lastWrite = now();
     await store.setMeta("autoLastWrite", S.auto.lastWrite);
   } catch (e) {
-    S.auto.state = "error";
-    S.notice = `The backup file couldn't be saved: ${e.message}`;
+    if (lostPermission(e)) S.auto.state = "prompt";
+    else { S.auto.state = "error"; S.notice = `The backup file couldn't be saved: ${e.message}`; }
   }
   render();
+}
+
+/** Re-read the backup file when the window comes back, if Chrome still allows it. */
+async function refreshAutoFile() {
+  if (!S.auto.handle || S.auto.state !== "granted") return;
+  S.auto.state = await backup.autoPermission(S.auto.handle).catch(() => "prompt");
+  if (S.auto.state !== "granted") return render();
+  try { await syncWithAutoFile(); }
+  catch (e) { if (lostPermission(e)) { S.auto.state = "prompt"; render(); } else throw e; }
 }
 
 /** On open (or reconnect): fold in anything newer from the shared file, then save. */
@@ -535,7 +548,7 @@ async function boot() {
     S.auto.lastWrite = await store.getMeta("autoLastWrite");
     if (S.auto.handle) {
       S.auto.state = await backup.autoPermission(S.auto.handle).catch(() => "error");
-      if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { S.notice = `Couldn't read the backup file: ${e.message}`; });
+      if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { if (lostPermission(e)) S.auto.state = "prompt"; else S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
     S.letterSeen = await store.getMeta("letterSeen");
     S.sync.rec = (await store.getMeta("gdrive")) || null;
@@ -2019,11 +2032,11 @@ window.addEventListener("hashchange", () => {
   if (anchor && document.getElementById(anchor)) document.getElementById(anchor).scrollIntoView(); else window.scrollTo(0, 0);
 });
 window.addEventListener("focus", () => {
-  if (S.ready && S.auto.state === "granted") guard(syncWithAutoFile());
+  if (S.ready && S.auto.state === "granted") guard(refreshAutoFile());
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.3.2";
+export const APP_VERSION = "1.3.3";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
