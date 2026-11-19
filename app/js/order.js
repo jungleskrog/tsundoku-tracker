@@ -98,6 +98,30 @@ export function moves(fromIds, toIds) {
   return fromIds.map((id, i) => ({ id, from: i, to: to.get(id), by: i - to.get(id) }));
 }
 
+/**
+ * Where one book belongs by reading-youth in the current order (index counted with
+ * the book removed): the place that leaves the fewest books out of youth order
+ * around it, never past the last book with a youth figure. Null if it has none.
+ * In a list already in youth order this is simply among its neighbours in age.
+ */
+export function youthSlot(books, id) {
+  const me = books.find(b => b.id === id);
+  const yo = me && youthOf(me);
+  if (!yo || yo.youth == null || yo.anyTime) return null;
+  const y = yo.youth;
+  const rest = books.slice().sort(byKey).filter(b => b.id !== id);
+  const ys = rest.map(b => { const o = youthOf(b); return o.youth == null || o.anyTime ? null : o.youth; });
+  const last = ys.reduce((m, v, k) => (v == null ? m : k), -1);
+  let cost = ys.filter(v => v != null && v < y).length; // slot 0: every younger book is after it
+  let best = 0, bestCost = cost;
+  for (let k = 1; k <= last + 1; k++) {
+    const v = ys[k - 1];
+    if (v != null) cost += v > y ? 1 : v < y ? -1 : 0;
+    if (cost <= bestCost) { best = k; bestCost = cost; }
+  }
+  return best;
+}
+
 // --- Moving one book ----------------------------------------------------------------------
 
 /**

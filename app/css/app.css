@@ -211,3 +211,14 @@ ul.sugg li { display: flex; justify-content: space-between; gap: 12px; align-ite
   li.row .grip { font-size: 1.3rem; padding: 4px 8px; margin-left: auto; }
   li.menurow { padding-left: 0 !important; }
 }
+
+/* Stage 6: the book's line beside it, For Goodreads, the bookmark */
+.entry .q { display: block; margin: .2rem 0 .4rem; color: var(--quiet); font-size: .95rem; line-height: 1.4; }
+.shelf .q, .row .q { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--quiet); line-height: 1.35; margin-top: .1rem; }
+.row .q { -webkit-line-clamp: 1; line-clamp: 1; }
+.shelf a .q { font-style: normal; }
+.grlist { list-style: none; padding: 0; margin: 0; }
+.grlist li { padding: .6rem 0; border-bottom: 1px solid var(--rule); }
+.grlist .btns { display: flex; gap: .8rem; align-items: center; margin-top: .35rem; flex-wrap: wrap; }
+a.bm { cursor: grab; }
+textarea { width: 100%; font: inherit; font-size: .9rem; padding: .5rem; border: 1px solid var(--rule); background: var(--paper, transparent); color: inherit; box-sizing: border-box; }

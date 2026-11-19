@@ -272,6 +272,70 @@ try {
     await send("Emulation.clearDeviceMetricsOverride");
   }
 
+  // Stage 6: quotes beside books, youth placing, For Goodreads, the bookmark
+  if (!HELPER) {
+    const A = "window.__antilibrary";
+    const wids = () => evaluate("[...document.querySelectorAll('li.row')].map(r => r.dataset.id)");
+    // the book's line on the desk and the list
+    await evaluate(`(() => { for (const b of ${A}.books.values()) if (b.status === 'want' || b.status === 'reading') b.synced = { ...(b.synced || {}), quote: 'A line for ' + b.id }; ${A}.version++; })()`);
+    await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('.q')");
+    check(await evaluate("[...document.querySelectorAll('.q')].some(q => q.textContent.startsWith('“A line for'))"), "the desk shows each book's quote beside it");
+    await go(`${BASE}/#/list`); await until("!!document.querySelector('li.row')");
+    check(await evaluate("[...document.querySelectorAll('li.row .q')].length") > 0, "the list shows the quote under each waiting book");
+    // a youth figure moves the book among its neighbours
+    await evaluate(`(() => { const w = [...${A}.books.values()].filter(b => b.status === 'want').sort((a, b) => a.queueKey < b.queueKey ? -1 : 1);
+      w.forEach((b, i) => { b.score = { ...(b.score || {}), youth: 10 + i * 10, youth_any_time: false }; b.mine = { ...b.mine }; delete b.mine.youth; b.prereqs = []; }); ${A}.version++; })()`);
+    await go(`${BASE}/#/`); await go(`${BASE}/#/list`); await until("!!document.querySelector('li.row')");
+    let w = await wids();
+    const mover = w.at(-1);
+    await go(`${BASE}/#/book/${mover}`); await until("!!document.querySelector('form[data-form=details]')");
+    await evaluate("(() => { document.querySelector('details.edit').open = true; const f = document.querySelector('form[data-form=details]'); f.youth.value = '15'; f.requestSubmit(); })()"); await sleep(500);
+    check((await text()).includes("moved from no."), "changing the youth figure says where the book moved");
+    await go(`${BASE}/#/list`); await until("!!document.querySelector('li.row')");
+    w = await wids();
+    check(w.indexOf(mover) === 1, `the book now sits among books of a similar youth (no. ${w.indexOf(mover) + 1})`);
+    // For Goodreads: begin a waiting book here, and it's listed to change there
+    const begun = w[2];
+    await go(`${BASE}/#/book/${begun}`); await until("!!document.querySelector('[data-act=status][data-to=reading]')");
+    await click("[data-act=status][data-to=reading]"); await sleep(300);
+    check((await text()).includes("Put it on Currently Reading"), "the book page says what to change on Goodreads");
+    await go(`${BASE}/#/`); await until("!!document.querySelector('a[href=\"#/goodreads\"]')");
+    check(true, "the desk links to the changes to make on Goodreads");
+    await go(`${BASE}/#/goodreads`); await until("document.body.innerText.includes('For Goodreads')");
+    await shot("15-for-goodreads");
+    const title = await evaluate(`${A}.books.get('${begun}').synced.title`);
+    check((await text()).includes(title) && await evaluate(`!!document.querySelector('a[href^="https://www.goodreads.com/book/show/"]')`), "For Goodreads lists the book, with a link to it");
+    await click(`[data-act=gr-done][data-id="${begun}"]`); await sleep(300);
+    check(!(await evaluate(`!!document.querySelector('[data-act=gr-done][data-id="${begun}"]')`)), "Done takes it off the list");
+    // the bookmark: built from the app's own address, and it parses
+    await go(`${BASE}/#/import`); await until("!!document.querySelector('a.bm')");
+    const href = await evaluate("document.querySelector('a.bm').getAttribute('href')");
+    const code = decodeURIComponent(href.slice("javascript:".length));
+    let compiles = true; try { new Function(code); } catch (e) { compiles = e.message; }
+    check(href.startsWith("javascript:") && compiles === true && code.includes(`"${BASE}/"`) && !code.includes("__APP__"), `the bookmark is ready to drag (${Math.round(href.length / 1024)} KB, ${compiles === true ? "parses" : compiles})`);
+    // pasting what it copies: a shelf moved there is followed here, a new book is flagged to find its place
+    const moved = w.find(id => id !== begun && id !== mover);
+    const payload = await evaluate(`(() => { const books = [...${A}.books.values()].filter(b => b.refs && b.refs.goodreadsBookId && b.synced && b.synced.shelf)
+      .map(b => ({ book_id: b.refs.goodreadsBookId, title: b.synced.title, author: b.synced.author, shelf: b.id === '${moved}' ? 'read' : b.synced.shelf, date_read: b.id === '${moved}' ? '2026-11-15' : null }));
+      books.push({ book_id: '999000111', title: 'A New Book', author: 'New Author', shelf: 'to-read', pages: 180 });
+      return JSON.stringify({ format: 'antilibrary-goodreads-sync', version: 1, synced_at: new Date().toISOString(), books }); })()`);
+    await click("[data-act=paste-open]"); await until("!!document.getElementById('paste')");
+    await evaluate(`(() => { const f = document.querySelector('form[data-form=paste]'); f.json.value = ${JSON.stringify(payload)}; f.requestSubmit(); })()`);
+    await until("document.body.innerText.includes('What this import will do')");
+    const t6 = await text();
+    check(/Moved shelf there\s*1, followed here/.test(t6) && /New books\s*1/.test(t6), "the pasted shelves show one shelf move and one new book before anything changes");
+    // the library changes while the plan is open: it's worked out again before anything is applied
+    await go(`${BASE}/#/`); await until("!!document.querySelector('[data-act=add][data-n=\"1\"]')");
+    await click('[data-act=add][data-n="1"]'); await sleep(300);
+    await go(`${BASE}/#/import`); await until("!!document.querySelector('[data-act=apply-import]')");
+    await click("[data-act=apply-import]"); await sleep(300);
+    check((await text()).includes("worked out again") && await evaluate("location.hash") === "#/import", "a plan made before the library changed is made again first");
+    await click("[data-act=apply-import]"); await until("location.hash === '#/'");
+    check(await evaluate(`${A}.books.get('${moved}').status`) === "read", "a book read on Goodreads is marked read here");
+    const nb = await evaluate(`(() => { const b = [...${A}.books.values()].find(b => b.refs && b.refs.goodreadsBookId === '999000111'); return b && { flag: !!(b.flags && b.flags.placeByYouth), status: b.status }; })()`);
+    check(nb && nb.status === "want" && nb.flag, "the new book waits to find its place by reading-youth");
+  }
+
   // phone width
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await go(`${BASE}/`); await until("window.__antilibrary && window.__antilibrary.ready");

@@ -215,7 +215,7 @@ const SAME_FACTS = (a, b) => {
  * Never overwrites `mine`, never deletes. Returns what would change.
  */
 export function planImport(books, incoming, { now, source = "goodreads-csv", shelves = IMPORT_SHELVES } = {}) {
-  const plan = { creates: [], updates: [], asks: [], gone: [], back: [], skipped: {}, unchanged: 0 };
+  const plan = { creates: [], updates: [], asks: [], gone: [], back: [], adopt: [], skipped: {}, unchanged: 0 };
   const byGr = new Map(books.filter(b => b.refs?.goodreadsBookId).map(b => [b.refs.goodreadsBookId, b]));
   const byIsbn = new Map(books.filter(b => b.refs?.isbn13).map(b => [b.refs.isbn13, b]));
   const byWork = new Map(books.filter(b => b.refs?.goodreadsWorkId).map(b => [b.refs.goodreadsWorkId, b]));
@@ -236,6 +236,8 @@ export function planImport(books, incoming, { now, source = "goodreads-csv", she
       if (SAME_FACTS(existing.synced, synced) && JSON.stringify(refs) === JSON.stringify(existing.refs)) plan.unchanged++;
       else plan.updates.push({ id: existing.id, synced, refs });
       if (existing.flags?.goneFromGoodreads) plan.back.push(existing.id);
+      const move = shelfMove(existing, inc);
+      if (move) plan.adopt.push(move);
       continue;
     }
     const sameWork = inc.workId && byWork.get(inc.workId);
@@ -250,15 +252,41 @@ export function planImport(books, incoming, { now, source = "goodreads-csv", she
   const order = (a, b) => (a.position ?? 1e9) - (b.position ?? 1e9) || (a.dateAdded || "").localeCompare(b.dateAdded || "");
   const queued = wanted.filter(i => i.shelf !== "read").sort(order);
   const keys = keysBetween(lastKey, null, queued.length);
-  queued.forEach((inc, i) => plan.creates.push(bookFromIncoming(inc, keys[i], source, now)));
+  // Joining a list that already exists: each new waiting book takes its place by reading-youth once it has a figure.
+  const placeLater = books.some(b => b.status === "want");
+  queued.forEach((inc, i) => {
+    const c = bookFromIncoming(inc, keys[i], source, now);
+    if (placeLater && c.book.status === "want") c.book.flags.placeByYouth = true;
+    plan.creates.push(c);
+  });
   wanted.filter(i => i.shelf === "read").forEach(inc => plan.creates.push(bookFromIncoming(inc, null, source, now)));
 
   // Books that came from Goodreads but are no longer on an imported shelf: flag, never delete.
   for (const b of books) {
     const id = b.refs?.goodreadsBookId;
-    if (id && !seen.has(id) && !b.flags?.goneFromGoodreads && (b.status === "want" || b.status === "reading")) plan.gone.push(b.id);
+    if (!id || seen.has(id)) continue;
+    if (!b.flags?.goneFromGoodreads && (b.status === "want" || b.status === "reading")) plan.gone.push(b.id);
+    // A finished or set-aside book taken off its shelf there: note that it's on none of the three now.
+    else if (b.status !== "want" && b.status !== "reading" && b.synced?.shelf && shelves.includes(b.synced.shelf)) {
+      plan.updates.push({ id: b.id, synced: { ...b.synced, shelf: null, syncedAt: now }, refs: b.refs });
+    }
   }
   return plan;
+}
+
+/**
+ * A book moved shelf on Goodreads. The app follows when its own status still matches
+ * the old shelf (nothing changed here since), or when Goodreads says it's been read.
+ * Otherwise the app's status stands, and it shows under "For Goodreads" instead.
+ */
+function shelfMove(book, inc) {
+  const from = book.synced?.shelf, to = SHELF_STATUS[inc.shelf];
+  if (!from || from === inc.shelf || !to || book.status === to) return null;
+  const unchangedHere = book.status === SHELF_STATUS[from];
+  const finishedThere = to === "read" && ["want", "reading", "paused"].includes(book.status);
+  if (!unchangedHere && !finishedThere) return null;
+  const date = to === "read" ? inc.dateRead : to === "reading" ? inc.dateStarted : null;
+  return { id: book.id, to, at: dateToAt(date), shelf: inc.shelf };
 }
 
 /** Resolve an ask: "link" makes the incoming facts update the matched book; "add" creates a new book. */

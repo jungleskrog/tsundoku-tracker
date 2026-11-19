@@ -23,8 +23,10 @@ No build step and no dependencies: plain ES modules in `app/`.
       js/domain.js  rules: books, events, import planning, merging backups
       js/store.js   IndexedDB
       js/backup.js  backup files (auto-saved file in Chrome)
+      js/order.js   the waiting list: bands, moves, read-after, reading-youth
+      js/goodreads.js  the round trip: what to change on Goodreads, the bookmark's data
+      bookmarklet.js   "Antilibrary: read my shelves" (Import page makes the bookmark)
     helper/         Mac helper (Stage 4): Goodreads through Chrome's login
-    bookmarklet/    fallback Goodreads sync for other users
     tests/          tests and a made-up Goodreads export
 
 Font: Source Serif 4 (SIL Open Font License, `app/fonts/OFL.txt`).
@@ -48,3 +50,14 @@ Besides difficulty, each book gets a reading-youth figure: when in a reading lif
     uv run youth.py --apply "$HOME/Library/Application Support/Antilibrary/youth-v5-candidate.json"
 
 In the app, The List › Compare with the reading-youth order shows the two orders side by side before anything moves, along with suggested reading orders (one book answering another). Your own youth figure on a book's page always wins.
+
+## Goodreads, both ways
+
+**In.** Three routes bring your shelves in; each shows what will change before anything does, and re-importing is always safe.
+- The Mac helper reads them every six hours, and whenever you open the app if they're more than three hours old.
+- The bookmark (Import page › drag *Antilibrary: read my shelves* to the bookmarks bar): click it on goodreads.com and choose *Send to Antilibrary*. It reads your three shelves in your own tab, a page a second, and hands them to the app; *Copy* and paste is the fallback.
+- The CSV export.
+
+A book that moved shelf on Goodreads moves here too, if you hadn't changed it here since (and a book read there is always marked read). New waiting books land at the end, then take their place by reading-youth once they're scored: score them in Settings, or turn on *Score new books as they arrive* (Haiku, about a tenth of a cent a book, with a monthly limit).
+
+**Out.** Goodreads has no way in for apps, so The Desk links to *For Goodreads*: each book whose shelf there doesn't match the app, with what to change and a link to it. The next read of your shelves confirms it; *Done* hides one meanwhile. On Goodreads a book sits on only one of Want to Read, Currently Reading and Read (and any exclusive shelf of your own), and moving a book off Read removes its read date there.

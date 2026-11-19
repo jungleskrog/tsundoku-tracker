@@ -12,6 +12,7 @@ import * as H from "./helper.js";
 import { csvObjects, goodreadsRows, isGoodreadsExport } from "./csv.js";
 import { keysBetween, compareKeys } from "./keys.js";
 import * as O from "./order.js";
+import * as G from "./goodreads.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
 const S = {
@@ -20,6 +21,7 @@ const S = {
   pendingArchive: null, confirm: null, query: "", ready: false, error: null,
   helper: { connected: false, status: null, estimate: null, asks: [] },
   menu: null, listNote: null, undoOrder: null, focusRow: null,
+  bmHref: null, bmInbox: [], paste: false,
 };
 
 const now = () => new Date().toISOString();
@@ -156,6 +158,12 @@ async function connectHelper() {
     return render();
   }
   await pullFromHelper();
+  // Opening the app reads Goodreads again if the shelves are more than three hours old.
+  const st = S.helper.status;
+  if (st && st.signed_in !== false && !st.job && !st.queued && (!st.synced_at || Date.now() - new Date(st.synced_at) > 3 * 3600e3)) {
+    await H.sync().catch(() => {});
+    S.helper.status = await H.status().catch(() => st);
+  }
   watchHelper();
 }
 
@@ -178,21 +186,9 @@ async function pullFromHelper() {
   const shelf = await H.shelves().catch(() => null);
   if (shelf && shelf.synced_at && shelf.synced_at !== (await store.getMeta("helperShelvesApplied"))) {
     const plan = planImport(books(), H.incomingFromShelves(shelf), { now: t, source: "goodreads-helper" });
-    const putBooks = [
-      ...plan.creates.map(c => c.book),
-      ...plan.updates.map(u => patchBook(S.books.get(u.id), { synced: u.synced, refs: u.refs }, t)),
-      ...plan.gone.map(id => patchBook(S.books.get(id), { flags: { ...S.books.get(id).flags, goneFromGoodreads: t } }, t)),
-      ...plan.back.map(id => patchBook(S.books.get(id), { flags: { ...S.books.get(id).flags, goneFromGoodreads: null } }, t)),
-    ];
     S.helper.asks = plan.asks;
-    if (putBooks.length) {
-      if (plan.creates.length > 5) await store.snapshot("before a Goodreads sync", archive());
-      await commit({ books: putBooks, events: plan.creates.flatMap(c => c.events) });
-    }
-    if (plan.creates.length || plan.gone.length) {
-      const bits = [plan.creates.length && plural(plan.creates.length, "new book"), plan.gone.length && `${plan.gone.length} no longer on Goodreads`].filter(Boolean);
-      S.notice = `From Goodreads: ${bits.join(", ")}.`;
-    }
+    const said = await applyPlan(plan, { snapshotOver: 5, label: "before a Goodreads sync" });
+    if (said) S.notice = `From Goodreads: ${said}.`;
     await store.setMeta("helperShelvesApplied", shelf.synced_at);
   }
   const cat = await H.catalogue().catch(() => null);
@@ -216,8 +212,98 @@ async function pullFromHelper() {
     }
     if (putBooks.length) await commit({ books: putBooks });
   }
+  const placed = await placeByYouth();
+  if (placed.length) S.notice = [S.notice, `Placed by reading-youth: ${placed.map(([id, at]) => `${titleOf(id)} (no. ${at + 1})`).join(", ")}.`].filter(Boolean).join(" ");
+  await autoScore().catch(e => console.warn("auto-score", e));
   render();
 }
+
+/**
+ * Apply an import plan (helper, bookmarklet or CSV): new books, updated facts,
+ * flags, and shelf moves made on Goodreads that the app follows. Returns a short
+ * summary of what came in, or "" if nothing worth saying.
+ */
+async function applyPlan(plan, { snapshotOver = 0, label = "before a Goodreads import" } = {}) {
+  const t = now(), work = new Map();
+  const put = (id, patch) => work.set(id, patchBook(work.get(id) || S.books.get(id), patch, t));
+  for (const u of plan.updates) put(u.id, { synced: u.synced, refs: u.refs });
+  for (const id of plan.gone) put(id, { flags: { ...(work.get(id) || S.books.get(id)).flags, goneFromGoodreads: t } });
+  for (const id of plan.back) put(id, { flags: { ...(work.get(id) || S.books.get(id)).flags, goneFromGoodreads: null } });
+  const events = plan.creates.flatMap(c => c.events);
+  for (const m of plan.adopt || []) {
+    const b = work.get(m.id) || S.books.get(m.id);
+    const last = evs(m.id).at(-1)?.at || "";
+    const at = m.at && m.at > last ? m.at : t;
+    const r = changeStatus(b, evs(m.id), m.to, at);
+    if (!r) continue;
+    events.push(...r.events.map(e => ({ ...e, source: "goodreads", ...(at === m.at ? { approx: true } : {}) })));
+    const patch = { ...r.patch };
+    if (m.to === "want" && !b.queueKey) {
+      patch.queueKey = keysBetween(waiting().at(-1)?.queueKey || null, null, 1)[0];
+      patch.flags = { ...b.flags, placeByYouth: true };
+    }
+    put(m.id, patch);
+  }
+  const putBooks = [...plan.creates.map(c => c.book), ...work.values()];
+  if (!putBooks.length) return "";
+  if (snapshotOver >= 0 && plan.creates.length > snapshotOver) await store.snapshot(label, archive());
+  await commit({ books: putBooks, events });
+  const moved = (plan.adopt || []).length;
+  return [plan.creates.length && plural(plan.creates.length, "new book"),
+    moved && `${plural(moved, "book")} moved shelf there, so ${moved === 1 ? "it's" : "they're"} moved here too`,
+    plan.gone.length && `${plan.gone.length} no longer on Goodreads`].filter(Boolean).join(", ");
+}
+
+/**
+ * Waiting books flagged to find their place (new from Goodreads, or a youth figure
+ * just changed) move to where their reading-youth fits, once they have one.
+ * Returns [id, index] for each book placed.
+ */
+async function placeByYouth(ids = null) {
+  const t = now();
+  let list = waiting();
+  const todo = ids || list.filter(b => b.flags?.placeByYouth && O.youthOf(b).youth != null).map(b => b.id);
+  if (!todo.length) return [];
+  const out = [], patched = new Map();
+  for (const id of todo) {
+    const slot = O.youthSlot(list, id);
+    const b = patched.get(id) || S.books.get(id);
+    const flags = { ...b.flags }; delete flags.placeByYouth;
+    if (slot == null) { if (b.flags?.placeByYouth && O.youthOf(b).anyTime) patched.set(id, patchBook(b, { flags }, t)); continue; }
+    const r = O.moveTo(list, id, slot);
+    const nb = patchBook(b, { flags, ...(r.ids.indexOf(id) !== list.findIndex(x => x.id === id) ? { queueKey: r.queueKey } : {}) }, t);
+    patched.set(id, nb);
+    list = list.map(x => (x.id === id ? nb : x)).sort(byQueue);
+    out.push([id, list.findIndex(x => x.id === id)]);
+  }
+  if (patched.size) await commit({ books: [...patched.values()] });
+  return out;
+}
+
+/**
+ * If you've turned it on: new books are scored as they arrive, with a monthly
+ * ceiling. Each run is estimated first and stops itself at the agreed limit.
+ */
+async function autoScore() {
+  const a = S.settings.autoScore;
+  const st = S.helper.status;
+  if (!a?.on || !S.helper.connected || !st?.scoring_ready || st.job || st.queued) return;
+  const list = unscored();
+  if (!list.length) return;
+  const month = now().slice(0, 7);
+  const spent = a.month === month ? a.spent || 0 : 0;
+  const room = (a.monthCap ?? 0.25) - spent;
+  const e = await H.estimate(list.map(b => ({ key: H.keyOf(b) })));
+  const cap = Math.ceil(e.usd * 1.5 * 1000 + 5) / 1000;
+  if (cap > room) { S.helper.autoHeld = { books: list.length, usd: e.usd, room }; return; }
+  S.helper.autoHeld = null;
+  await H.score(list.map(scoreRecord), cap);
+  await commit({ settings: { ...S.settings, autoScore: { ...a, month, spent: Math.round((spent + cap) * 1000) / 1000 }, updatedAt: now() } });
+  S.helper.status = await H.status();
+  watchHelper();
+}
+
+const scoreRecord = b => { const e = effective(b); return { key: H.keyOf(b), title: e.title, author: e.author, year: e.year, pages: e.pages, isbn13: b.refs?.isbn13 || null }; };
 
 function unscored() {
   return books().filter(b => b.status !== "abandoned" && !b.score && effective(b).title);
@@ -245,7 +331,54 @@ function helperBlock() {
     ${!st.scoring_ready ? html`<p class="quiet">The helper has no Claude API key, so it can't score yet (see the README).</p>`
       : todo && !(st.job && st.job.kind === "score") ? (e ? html`<p class="notice">Scoring ${plural(e.books, "book")} should cost about <b>$${e.usd.toFixed(2)}</b>${e.learned ? "" : " (a first estimate)"}. It stops by itself if it reaches $${e.cap.toFixed(2)}.
             <button data-act="helper-score">Score them</button> <button class="link" data-act="helper-estimate-cancel">Not now</button></p>`
-          : html`<p><button data-act="helper-estimate">What would scoring ${todo === 1 ? "it" : `the ${todo}`} cost?</button></p>`) : ""}`;
+          : html`<p><button data-act="helper-estimate">What would scoring ${todo === 1 ? "it" : `the ${todo}`} cost?</button></p>`) : ""}
+    ${st.scoring_ready ? autoScoreBlock() : ""}`;
+}
+
+function autoScoreBlock() {
+  const a = S.settings.autoScore || {}, month = now().slice(0, 7);
+  const spent = a.month === month ? a.spent || 0 : 0, cap = a.monthCap ?? 0.25;
+  return html`<form class="inline" data-form="autoscore">
+      <label><input type="checkbox" name="on" ${a.on ? raw("checked") : ""} data-change="autoscore"> Score new books as they arrive</label>
+      <label>at most $<input name="cap" type="number" min="0.05" max="5" step="0.05" value="${cap.toFixed(2)}" inputmode="decimal" style="width:5em"> a month</label>
+      <button>Save</button></form>
+    <p class="quiet small">About a tenth of a cent a book, so a new book can take its place by reading-youth without you asking.
+      ${a.on ? `This month: up to $${spent.toFixed(3)} of $${cap.toFixed(2)} (counted at each run's limit, so the real figure is lower).` : "Off: new books wait at the end of the list until you score them."}
+      ${S.helper.autoHeld ? ` Held back: scoring ${plural(S.helper.autoHeld.books, "book")} would pass this month's limit.` : ""}</p>`;
+}
+
+/** An import plan that remembers what it was made from, so it can be made again if the library changes meanwhile. */
+function makePlan(incoming, source) {
+  return { ...planImport(books(), incoming, { now: now(), source }), incoming, source, version: S.version };
+}
+
+// --- The bookmarklet ---------------------------------------------------------------------
+
+/** Turn what the bookmarklet read into an import plan to look at (nothing changes yet). */
+function takeBookmarklet(payload) {
+  S.plan = makePlan(G.fromBookmarklet(payload), "goodreads-bookmarklet");
+  S.notice = `From the bookmark: ${plural(payload.books.length, "book")} read on Goodreads.`;
+  if (route()[0] !== "import") location.hash = "#/import";
+}
+
+let lastBookmarklet = null;
+window.addEventListener("message", e => {
+  if (e.origin !== G.GR || !e.data || e.data.format !== "antilibrary-goodreads-sync") return;
+  try { e.source?.postMessage({ type: "antilibrary-received" }, e.origin); } catch {}
+  if (e.data.synced_at === lastBookmarklet) return; // it repeats until we answer
+  lastBookmarklet = e.data.synced_at;
+  if (!S.ready) { S.bmInbox.push(e.data); return; }
+  guard(Promise.resolve().then(() => { takeBookmarklet(e.data); render(); }));
+});
+
+async function loadBookmarklet() {
+  try {
+    const src = await (await fetch("bookmarklet.js", { cache: "no-cache" })).text();
+    const app = new URL(".", location.href).href;
+    const code = src.split("\n").filter(l => !/^\s*\/\//.test(l)).join("\n").replace("__APP__", app);
+    S.bmHref = "javascript:" + encodeURIComponent(code);
+    if (route()[0] === "import") render();
+  } catch { /* offline: the CSV still works */ }
 }
 
 // --- Start-up -----------------------------------------------------------------------
@@ -275,6 +408,8 @@ async function boot() {
       if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
     S.ready = true;
+    for (const p of S.bmInbox.splice(0)) takeBookmarklet(p);
+    loadBookmarklet();
     connectHelper();
   } catch (e) {
     S.error = e.message || String(e);
@@ -335,6 +470,7 @@ function deskEntry(b) {
     ${coverImg(b, "thumb")}
     <a class="t" href="#/book/${b.id}">${e.title}</a>
     <div class="a sc">${[e.author, e.year].filter(Boolean).join(" · ")}</div>
+    ${quoteLine(e, "q")}
     ${progressRule(page, e.pages)}
     <div class="row">
       <span class="where">${planned > 0 || today > 0
@@ -385,9 +521,14 @@ function viewDesk() {
     <h2 class="sc small">Next on the shelf</h2>
     <ol class="shelf">${next.map((b, i) => { const e = effective(b); return html`<li>
       <span class="n">${i + 1}</span><a href="#/book/${b.id}"><i>${e.title}</i> <span class="quiet">${e.author}</span>
-        ${startWords(b.id) ? html`<span class="d">begins ${startWords(b.id).short}</span>` : ""}</a>
+        ${startWords(b.id) ? html`<span class="d">begins ${startWords(b.id).short}</span>` : ""}${quoteLine(e, "q small")}</a>
       <button class="link" data-act="status" data-id="${b.id}" data-to="reading">Begin</button></li>`; })}</ol>
-    <p><a href="#/list">The whole list</a> · <a href="#/add">Add a book</a></p>`}`;
+    <p><a href="#/list">The whole list</a> · <a href="#/add">Add a book</a>${grCount() ? html` · <a href="#/goodreads">${plural(grCount(), "change")} to make on Goodreads</a>` : ""}</p>`}`;
+}
+
+/** The book's line (Goodreads' most-liked quote, or your own note), shown beside it. */
+function quoteLine(e, cls) {
+  return e.annotation ? html`<span class="${cls}">“${e.annotation}”</span>` : "";
 }
 
 function listRow(b, i) {
@@ -470,6 +611,7 @@ function waitingRow(b, i) {
   return html`<li class="row" id="row-${b.id}" data-id="${b.id}" tabindex="0" draggable="true">
     <span class="n">${i + 1}</span>
     <span class="body"><a href="#/book/${b.id}" tabindex="-1"><i>${e.title}</i> <span class="quiet">${e.author}</span></a>
+      ${quoteLine(e, "q small")}
       ${req.length ? html`<span class="after">after ${req.map(id => html`<i>${titleOf(id)}</i>`).reduce((a, x, k) => [...a, k ? ", " : "", x], [])}</span>` : ""}</span>
     <span class="right"><span class="d">${e.pages ? `${e.pages} pp. · ` : ""}difficulty ${Math.round(D.D * 10) / 10}${y.youth != null ? ` · youth ${y.youth}` : ""}</span>
       <button class="link" data-act="menu" data-id="${b.id}" aria-expanded="${open ? "true" : "false"}">Move to…</button>
@@ -626,6 +768,41 @@ function afterBlock(b) {
     ${open ? pickPanel(b, "req") : html`<p><button class="link" data-act="book-req" data-id="${b.id}">Read it after another book…</button></p>`}`;
 }
 
+// --- For Goodreads: changes to make there by hand -------------------------------------------
+
+const grItems = () => G.changesForGoodreads(books());
+const grCount = () => grItems().length;
+const grItem = b => grItems().find(x => x.id === b.id) || null;
+
+function grWords(b, x) {
+  const fin = bookDates(evs(b.id)).finished, began = bookDates(evs(b.id)).started;
+  if (x.kind === "off") return `Set aside here: take it off ${G.SHELF_NAME[x.from]} there (or put it on a did-not-finish shelf, if you keep one).`;
+  if (x.kind === "missing") return `Not on Goodreads. Add it to ${G.SHELF_NAME[x.to]} if you want it there.`;
+  const when = x.to === "read" && fin ? `, finished ${shortDate(fin)}` : x.to === "currently-reading" && began ? `, begun ${shortDate(began)}` : "";
+  return `Put it on ${G.SHELF_NAME[x.to]}${when}${x.from ? ` (it's on ${G.SHELF_NAME[x.from]} there)` : ""}.${x.from === "read" ? " Moving a book off Read removes its read date there." : ""}`;
+}
+
+function viewGoodreads() {
+  const items = grItems();
+  const groups = [["shelf", "Change the shelf"], ["off", "Set aside here"], ["missing", "Not on Goodreads"]];
+  const link = (b, x) => (x.kind === "missing" ? G.searchUrl(effective(b).title, effective(b).author) : G.bookUrl(b));
+  return html`
+    <div class="dateline sc"><span>${plural(items.length, "change")}</span><span>For Goodreads</span></div>
+    <h1>For Goodreads</h1>
+    <p>Goodreads doesn't let apps change your shelves, so these are for you to do there. Each link opens the book; the next read of your shelves confirms the change and takes it off this list. <i>Done</i> hides one now.</p>
+    <p class="quiet small">On Goodreads a book sits on only one of Want to Read, Currently Reading and Read (and any exclusive shelf of your own), so putting it on one takes it off the others. Your review stays.</p>
+    ${items.length ? groups.map(([k, name]) => {
+      const list = items.filter(x => x.kind === k);
+      return list.length ? html`<section><h2 class="sc small">${name} <span class="quiet">${list.length}</span></h2>
+        <ul class="grlist">${list.map(x => { const b = S.books.get(x.id); return html`<li>
+          <a href="#/book/${b.id}"><i>${effective(b).title}</i></a> <span class="quiet">${effective(b).author}</span><br>
+          <span class="small">${grWords(b, x)}</span>
+          <span class="btns"><a class="button quietbtn" href="${link(b, x)}" target="_blank" rel="noopener">${x.kind === "missing" ? "Find it" : "Open"} on Goodreads</a>
+            <button class="link" data-act="gr-done" data-id="${b.id}">Done</button></span></li>`; })}</ul></section>` : "";
+    }) : html`<p class="quiet">Nothing to change: Goodreads matches the app.</p>`}
+    ${S.helper.connected ? html`<p><button data-act="helper-sync">Read Goodreads now</button> <span class="quiet small">to confirm what you've changed.</span></p>` : ""}`;
+}
+
 const STATUS_LABEL = { want: "Waiting", reading: "In hand", paused: "Paused", read: "Read", abandoned: "Set aside" };
 
 function describe(e) {
@@ -671,7 +848,8 @@ function viewBook(id) {
         <dt>Added</dt><dd>${shortDate(d.added) || "—"}</dd>
         ${d.started ? html`<dt>Begun</dt><dd>${shortDate(d.started)}</dd>` : ""}
         ${d.finished ? html`<dt>Finished</dt><dd>${shortDate(d.finished)}</dd>` : ""}
-        ${b.refs?.goodreadsBookId ? html`<dt>Goodreads</dt><dd><a href="https://www.goodreads.com/book/show/${b.refs.goodreadsBookId}" target="_blank" rel="noopener">book ${b.refs.goodreadsBookId}</a></dd>` : ""}
+        ${b.refs?.goodreadsBookId ? html`<dt>Goodreads</dt><dd>${s.shelf ? `${G.SHELF_NAME[s.shelf] || s.shelf} · ` : s.source?.startsWith("goodreads") ? "on none of your three shelves · " : ""}<a href="${G.bookUrl(b)}" target="_blank" rel="noopener">open on Goodreads</a>
+          ${grItem(b) ? html`<br><span class="small">${grWords(b, grItem(b))} <button class="link" data-act="gr-done" data-id="${id}">Done</button></span>` : ""}</dd>` : ""}
       </dl>
       <p class="actions">${actions.map(([to, label]) => html`<button data-act="status" data-id="${id}" data-to="${to}">${label}</button>`)}</p>
       ${whyBlock(b)}
@@ -785,7 +963,18 @@ function viewImport() {
         <li>Choose it here. Nothing changes until you've seen what the import will do.</li>
       </ol>
       <p><label class="button">Choose the Goodreads CSV file <input type="file" accept=".csv,text/csv" data-change="csv" hidden></label></p>
-      <p class="quiet small">Want to Read and Currently Reading become your list; Read becomes history. Other shelves are left out. Re-importing later is safe: books are matched, your edits are kept, and nothing is deleted.</p>`;
+      <p class="quiet small">Want to Read and Currently Reading become your list; Read becomes history. Other shelves are left out. Re-importing later is safe: books are matched, your edits are kept, and nothing is deleted.</p>
+      <h2 class="sc small">Or the bookmark</h2>
+      <p>Quicker, and it keeps your shelf order. Drag this to your bookmarks bar:
+        ${S.bmHref ? html`<a class="button quietbtn bm" href="${S.bmHref}" data-bm="1">Antilibrary: read my shelves</a>` : html`<span class="quiet">(loading…)</span>`}</p>
+      <ol class="steps">
+        <li>On goodreads.com, signed in, click the bookmark. It reads your three shelves in that tab, a page a second.</li>
+        <li>Choose <i>Send to Antilibrary</i>: this page opens with what the import will do. Nothing changes until you say.</li>
+      </ol>
+      <p class="quiet small">If the browser blocks that, choose <i>Copy</i> instead and <button class="link" data-act="paste-open">paste it here</button>. The bookmark only talks to Goodreads and to this app.</p>
+      ${S.paste ? html`<form data-form="paste" class="stack"><label class="vh" for="paste">What the bookmark copied</label>
+        <textarea id="paste" name="json" rows="4" placeholder="Paste what the bookmark copied"></textarea>
+        <p><button>See what it would do</button> <button type="button" class="link" data-act="paste-close">Cancel</button></p></form>` : ""}`;
   }
   const st = p.creates.reduce((m, c) => ((m[c.book.status] = (m[c.book.status] || 0) + 1), m), {});
   const skipped = Object.entries(p.skipped);
@@ -796,6 +985,7 @@ function viewImport() {
       <dt>New books</dt><dd>${p.creates.length}${p.creates.length ? ` — ${[st.want && `${st.want} waiting`, st.reading && `${st.reading} in hand`, st.read && `${st.read} read`].filter(Boolean).join(", ")}` : ""}</dd>
       <dt>Updated from Goodreads</dt><dd>${p.updates.length}</dd>
       <dt>Unchanged</dt><dd>${p.unchanged}</dd>
+      <dt>Moved shelf there</dt><dd>${p.adopt?.length ? `${p.adopt.length}, followed here: ${p.adopt.map(m => `${effective(S.books.get(m.id)).title} → ${STATUS_LABEL[m.to].toLowerCase()}`).join("; ")}` : "none"}</dd>
       <dt>No longer on Goodreads</dt><dd>${p.gone.length ? `${p.gone.length} (flagged, not removed)` : "none"}</dd>
       <dt>Other shelves left out</dt><dd>${skipped.length ? skipped.map(([k, v]) => `${k} ${v}`).join(", ") : "none"}</dd>
     </dl>
@@ -886,8 +1076,8 @@ function render() {
   if (S.error) { root.innerHTML = html`<main class="page"><h1>Antilibrary couldn't open</h1><p>${S.error}</p></main>`; return; }
   if (!S.ready) return;
   const [name, arg] = route();
-  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings }[name] || viewDesk;
-  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings" }[name] || "desk";
+  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads }[name] || viewDesk;
+  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk" }[name] || "desk";
   const focus = document.activeElement?.id;
   root.innerHTML = html`${nav(active)}<main class="page">${notices()}${view()}</main>`;
   if (S.focusRow && document.getElementById(`row-${S.focusRow}`)) {
@@ -973,6 +1163,13 @@ async function act(name, d) {
       S.notice = "Your order is back as it was.";
       return commit({ books: put });
     }
+    case "gr-done": {
+      const x = grItem(b);
+      if (!x) return render();
+      return commit({ books: [patchBook(b, { flags: { ...b.flags, grDone: G.doneMark(b, x) } }, t)] });
+    }
+    case "paste-open": S.paste = true; render(); document.getElementById("paste")?.focus(); return;
+    case "paste-close": S.paste = false; return render();
     case "helper-retry": return connectHelper();
     case "helper-sync": await H.sync(); S.helper.status = await H.status(); render(); return watchHelper();
     case "helper-estimate": {
@@ -983,7 +1180,7 @@ async function act(name, d) {
     }
     case "helper-estimate-cancel": S.helper.estimate = null; return render();
     case "helper-score": {
-      const list = unscored().map(b => { const e = effective(b); return { key: H.keyOf(b), title: e.title, author: e.author, year: e.year, pages: e.pages, isbn13: b.refs?.isbn13 || null }; });
+      const list = unscored().map(scoreRecord);
       await H.score(list, S.helper.estimate.cap);
       S.helper.estimate = null;
       S.helper.status = await H.status();
@@ -1040,20 +1237,23 @@ async function act(name, d) {
     }
     case "cancel-import": S.plan = null; return render();
     case "apply-import": {
+      if (S.plan.incoming && S.plan.version !== S.version) {
+        // The library changed while the plan was open (the helper brought books in, say): plan again, keep your answers.
+        const choices = new Map(S.plan.asks.map(a => [a.incoming.goodreadsBookId, a.choice]));
+        S.plan = makePlan(S.plan.incoming, S.plan.source);
+        S.plan.asks.forEach(a => { a.choice = choices.get(a.incoming.goodreadsBookId); });
+        S.notice = "Your library changed while this was open, so here is the import worked out again. Nothing has changed yet.";
+        return render();
+      }
       const p = S.plan;
       const extra = p.asks.filter(a => a.choice && a.choice !== "skip").map(a => resolveAsk(a, a.choice, books(), { now: t }));
       const creates = [...p.creates, ...extra.flatMap(x => x.creates)];
       const updates = [...p.updates, ...extra.flatMap(x => x.updates)];
       await store.snapshot("before a Goodreads import", archive());
-      const putBooks = [
-        ...creates.map(c => c.book),
-        ...updates.map(u => patchBook(S.books.get(u.id), { synced: u.synced, refs: u.refs }, t)),
-        ...p.gone.map(id => patchBook(S.books.get(id), { flags: { ...S.books.get(id).flags, goneFromGoodreads: t } }, t)),
-        ...p.back.map(id => patchBook(S.books.get(id), { flags: { ...S.books.get(id).flags, goneFromGoodreads: null } }, t)),
-      ];
       S.plan = null;
-      S.notice = `Imported: ${plural(creates.length, "new book")}, ${plural(updates.length, "update")}.`;
-      await commit({ books: putBooks, events: creates.flatMap(c => c.events) });
+      await applyPlan({ ...p, creates, updates }, { snapshotOver: -1 });
+      const placed = await placeByYouth();
+      S.notice = `Imported: ${plural(creates.length, "new book")}, ${plural(updates.length, "update")}${p.adopt?.length ? `, ${plural(p.adopt.length, "shelf move")} followed` : ""}${placed.length ? `; ${placed.length} placed by reading-youth` : ""}.`;
       location.hash = "#/";
       return;
     }
@@ -1073,6 +1273,18 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "paste": {
+      try { takeBookmarklet(JSON.parse(f.get("json") || "")); S.paste = false; }
+      catch (e) { S.notice = e instanceof SyntaxError ? "That isn't what the bookmark copies." : e.message; }
+      return render();
+    }
+    case "autoscore": {
+      const cap = Math.min(5, Math.max(0.05, +f.get("cap") || 0.25));
+      await commit({ settings: { ...S.settings, autoScore: { ...(S.settings.autoScore || {}), on: f.get("on") === "on", monthCap: cap }, updatedAt: t } });
+      S.notice = f.get("on") === "on" ? `New books will be scored as they arrive, up to $${cap.toFixed(2)} a month.` : "New books won't be scored by themselves.";
+      if (f.get("on") === "on") await autoScore().catch(() => {});
+      return render();
+    }
     case "annotation": return commit({ books: [patchBook(b, { mine: { ...b.mine, annotation: (f.get("annotation") || "").trim() } }, t)] });
     case "details": {
       const mine = { ...b.mine };
@@ -1081,7 +1293,15 @@ async function submit(form) {
       { const v = f.get("difficulty"); if (v && !isNaN(+v)) mine.difficulty = Math.min(10, Math.max(1, +v)); else delete mine.difficulty; }
       { const v = f.get("youth"); if (v !== null && v !== "" && !isNaN(+v)) mine.youth = Math.round(Math.min(100, Math.max(0, +v))); else delete mine.youth; }
       S.notice = "Saved.";
-      return commit({ books: [patchBook(b, { mine }, t)] });
+      const youthChanged = O.youthOf(b).youth !== O.youthOf({ ...b, mine }).youth;
+      await commit({ books: [patchBook(b, { mine }, t)] });
+      if (youthChanged && b.status === "want") {
+        const before = waiting().findIndex(x => x.id === b.id);
+        const [placed] = await placeByYouth([b.id]);
+        if (placed) S.notice = placed[1] === before ? `Saved. At youth ${O.youthOf(S.books.get(b.id)).youth} it stays at no. ${before + 1}.` : `Saved, and moved from no. ${before + 1} to no. ${placed[1] + 1}, among books of a similar reading-youth.`;
+        render();
+      }
+      return;
     }
     case "add": {
       const last = books().map(x => x.queueKey).filter(Boolean).sort(compareKeys).at(-1) || null;
@@ -1115,13 +1335,14 @@ async function submit(form) {
 async function change(el) {
   const kind = el.dataset.change;
   if (kind === "ask") { S.plan.asks[+el.dataset.i].choice = el.value; return; }
+  if (kind === "autoscore") return; // saved with its form
   const file = el.files?.[0];
   if (!file) return;
   try {
     if (kind === "csv") {
       const objs = csvObjects(await file.text());
       if (!isGoodreadsExport(objs)) throw new Error("That doesn't look like a Goodreads library export.");
-      S.plan = planImport(books(), goodreadsRows(objs), { now: now() });
+      S.plan = makePlan(goodreadsRows(objs), "goodreads-csv");
       S.notice = null;
     }
     if (kind === "archive") {
@@ -1235,7 +1456,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "0.5.0 (Stage 5: ordering)";
+export const APP_VERSION = "0.6.0 (Stage 6: the Goodreads round trip)";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
