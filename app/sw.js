@@ -1,7 +1,7 @@
 // Offline cache. App files: always try the network first (so updates show at once),
 // fall back to the cached copy when offline.
 // Covers: cache on first view. Bump VERSION when the file list changes.
-const VERSION = "antilibrary-v12";
+const VERSION = "antilibrary-v13";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css", "css/fonts.css", "css/year.css",
   "js/main.js", "js/store.js", "js/backup.js", "js/domain.js", "js/keys.js", "js/ids.js", "js/csv.js", "js/format.js", "js/migrations.js", "js/model.js", "js/helper.js", "js/order.js", "js/goodreads.js", "js/library.js", "js/year.js", "js/sync.js", "js/gdrive.js", "js/config.js", "bookmarklet.js",

@@ -388,7 +388,12 @@ export function mergeArchives(local, remote) {
   for (const e of remote.events) if (!events.has(e.id)) { events.set(e.id, e); eventsAdded++; }
   for (const id of tomb.keys()) events.delete(id);
   for (const [id, e] of events) if (e.bookId && !books.has(e.bookId)) events.delete(id);
-  const settings = (remote.settings?.updatedAt || "") > (local.settings?.updatedAt || "") ? remote.settings : local.settings;
+  // Settings: the newer wins, except that a library with nothing in it (a device just set up)
+  // never overrides the settings of one that has books.
+  const empty = a => !(a.books || []).length && !(a.events || []).some(e => e.source === "app");
+  const settings = empty(local) && !empty(remote) ? remote.settings || local.settings
+    : empty(remote) && !empty(local) ? local.settings || remote.settings
+    : (remote.settings?.updatedAt || "") > (local.settings?.updatedAt || "") ? remote.settings : local.settings;
   return {
     books: [...books.values()], events: [...events.values()].sort(byTime), tombstones: [...tomb.values()], settings,
     stats: { booksAdded, booksUpdated, eventsAdded },

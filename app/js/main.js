@@ -517,7 +517,7 @@ async function boot() {
   try {
     let data = await store.loadAll();
     if (!data.settings) {
-      data.settings = defaultSettings(now());
+      data.settings = { ...defaultSettings(now()), updatedAt: "1970-01-01T00:00:00.000Z" }; // any real settings (another device's) win
       await store.write({ put: { settings: [data.settings] } });
     }
     if (data.settings.schemaVersion < SCHEMA_VERSION) {
@@ -2023,7 +2023,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.3.1";
+export const APP_VERSION = "1.3.2";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

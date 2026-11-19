@@ -83,3 +83,18 @@ test("an expired token says so; sign-in links and returns are read correctly", a
   assert.ok(new Conflict("x") instanceof Error);
   assert.equal(contentOf(lib([book("a")])), contentOf({ ...lib([book("a")]), exportedAt: "later" }));
 });
+
+test("a new, empty device never overrides the settings of the library it joins", async () => {
+  const mac = lib([book("a")], [ev("e1", "a", NOW)], "2026-11-01T00:00:00.000Z");
+  mac.settings = { ...mac.settings, dailyTokens: 25, bands: { next: 3, soon: 12 } };
+  const phone = lib([], [], "2026-11-19T18:00:00.000Z");           // set up later, so its settings are newer
+  const d = fakeDrive({ file: phone });
+  const state = { local: mac };
+  await run(state);
+  assert.equal(d.file.settings.dailyTokens, 25);
+  assert.deepEqual(d.file.settings.bands, { next: 3, soon: 12 });
+  const p2 = { local: phone };
+  await run(p2);
+  assert.equal(p2.local.settings.dailyTokens, 25);
+  assert.equal(p2.local.books.length, 1);
+});
