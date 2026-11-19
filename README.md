@@ -50,6 +50,7 @@ When you open the app the first time, the Desk shows a short *Getting started* l
   - A book can be set to *read after* another. It then stays below that book.
 - **Tokens, difficulty, pages.** Each book has a difficulty from 1 to 10. This measures reading effort, not merit: how slowly a page goes. A page costs tokens according to its difficulty, so you set *tokens a day* and the app works out how many pages that means for each book in hand, and when each one will finish. You can change the constants in *Settings › The model*.
 - **More than one book at once.** Each book's share of your day is learned from what you've actually read over the last fortnight. If you fall behind, the app says so in words; nothing is shown in red.
+- **Your own pace.** Press *▶ time it* on a book on the Desk when you sit down to read, and *Stop* when you finish, then say where you got to. Each timed session is a real measurement of your speed at that book's difficulty. After a few sessions, *Settings › The model* offers your measured speeds for easy and dense prose in place of the defaults. Nothing changes until you choose *Use these*, and *Put back the previous pace* undoes it. A timer left running for over three hours counts as three hours and isn't used to learn from.
 - **Logging.** Use *+1*, *+2* or *+5* pages, or type the page you've reached. Every entry is kept with its time. The history, colophons, weekly letters and printed year are all built from these entries.
 
 ## Your data and backups
@@ -187,6 +188,7 @@ You need Node 22 or later and Chrome. There are no dependencies to install for t
       js/model.js       tokens ↔ difficulty ↔ pages, learned shares, the forecast
       js/order.js       the list: bands, moves, read-after, reading-youth
       js/goodreads.js   the round trip: what to change on Goodreads, the bookmark's data
+      js/calib.js       pace calibration from timed sessions
       js/library.js     colophons, the wall label, shelf letters, the commonplace book
       js/year.js        the printed year
       js/sync.js        sync: merge with the cloud copy, write back only if needed, retry on a clash

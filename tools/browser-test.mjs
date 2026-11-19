@@ -511,6 +511,34 @@ try {
     check(!/^\s*40\b/.test(pt), "and today's pages don't include it");
   }
 
+  // 1.4: timed sessions teach your pace
+  if (!HELPER) {
+    const A = "window.__antilibrary";
+    await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
+    let tid = await evaluate("(document.querySelector('[data-act=timer-start]') || {}).dataset?.id || null");
+    if (!tid) { // nothing in hand: hold one for the check (in memory)
+      tid = await evaluate(`(() => { const b = [...${A}.books.values()].find(b => b.status === 'want'); b.status = 'reading'; ${A}.version++; return b.id; })()`);
+      await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('[data-act=timer-start]')");
+      tid = await evaluate("document.querySelector('[data-act=timer-start]').dataset.id");
+    }
+    await evaluate(`(() => { const b = ${A}.books.get('${tid}'); b.score = { ...(b.score || {}), C: 4, words: 90000 }; b.mine = { ...b.mine, pages: 300 }; delete b.mine.difficulty; ${A}.version++; })()`);
+    await click(`[data-act=timer-start][data-id="${tid}"]`); await until("!!document.querySelector('.clock')");
+    check(true, "▶ time it starts a running clock on the book");
+    await evaluate(`${A}.timer.start = new Date(Date.now() - 30 * 60000).toISOString()`); // as if begun half an hour ago
+    await click(`[data-act=timer-stop][data-id="${tid}"]`); await until("!!document.querySelector('form.stopform')");
+    const startPage = await evaluate(`${A}.stopping.startPage`);
+    await evaluate(`(() => { const f = document.querySelector('form.stopform'); f.page.value = String(${startPage} + 20); f.requestSubmit(); })()`); await sleep(400);
+    const sess = await evaluate(`${A}.events.filter(e => e.type === 'session' && e.bookId === '${tid}').pop()`);
+    check(sess && sess.minutes === 30 && sess.toPage - sess.fromPage === 20, `a stopped session keeps its time and pages (${sess && sess.minutes} min, ${sess && sess.toPage - sess.fromPage} pp)`);
+    check((await text()).includes("Timed: 20 pages in thirty minutes"), "and says the pace back");
+    const pageNow = await evaluate(`(() => { let p = 0; for (const e of ${A}.byBook.get('${tid}') || []) if (e.type === 'progress') p = e.page; return p; })()`);
+    check(pageNow === startPage + 20, "the session's pages are logged as reading");
+    await go(`${BASE}/#/settings`); await until("!!document.querySelector('.pace')");
+    check(/Your measured pace/.test(await evaluate("document.querySelector('.pace').innerText")), "Settings shows your measured pace from the session");
+    await go(`${BASE}/#/book/${tid}`); await until("!!document.querySelector('.record')");
+    check(/Timed: about [\d.]+ min a page over 1 session/.test(await text()), "the book shows your timed minutes a page beside the model's");
+  }
+
   // phone width
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await go(`${BASE}/`); await until("window.__antilibrary && window.__antilibrary.ready");

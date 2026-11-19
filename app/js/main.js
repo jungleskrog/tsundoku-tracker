@@ -18,6 +18,7 @@ import * as Y from "./year.js";
 import { eventId } from "./ids.js";
 import * as SY from "./sync.js";
 import * as GD from "./gdrive.js";
+import * as CB from "./calib.js";
 import { GOOGLE_CLIENT_ID } from "./config.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
@@ -29,6 +30,7 @@ const S = {
   menu: null, listNote: null, undoOrder: null, focusRow: null,
   bmHref: null, bmInbox: [], paste: false,
   noteFor: null, letterSeen: null, openRow: null, edPanel: null,
+  timer: null, stopping: null, prevModel: null,
   sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false },
 };
 
@@ -563,6 +565,7 @@ async function boot() {
       if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { if (lostPermission(e)) S.auto.state = "prompt"; else S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
     S.letterSeen = await store.getMeta("letterSeen");
+    S.timer = (await store.getMeta("timer")) || null;
     S.sync.rec = (await store.getMeta("gdrive")) || null;
     S.sync.last = (await store.getMeta("gdriveLast")) || null;
     if (S.sync.rec?.on) S.sync.state = "on";
@@ -754,6 +757,23 @@ function figures(reading) {
   </div>`;
 }
 
+// --- Timed sessions (pace calibration) -----------------------------------------------------
+
+function clockText(start) {
+  const m = Math.floor((Date.now() - new Date(start)) / 60000);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+}
+setInterval(() => document.querySelectorAll(".clock[data-start]").forEach(el => { el.textContent = "● " + clockText(el.dataset.start); }), 15000);
+
+function stopForm(b) {
+  const len = CB.sessionLength(S.stopping.start, S.stopping.end);
+  const page = Math.max(currentPage(evs(b.id)), S.stopping.startPage);
+  return html`<form class="moreinfo stopform" data-form="timer-save" data-id="${b.id}">
+    <p>${len.capped ? html`That timer ran for over three hours, so it counts as ${CB.MAX_MINUTES} minutes and won't be used to learn your pace.` : html`You read for ${L.duration(len.minutes)}${S.stopping.startPage ? ` from p. ${S.stopping.startPage}` : ""}.`}
+      <label>Where did you get to? <input name="page" type="number" min="${S.stopping.startPage}" ${effective(b).pages ? raw(`max="${effective(b).pages}"`) : ""} value="${page}" inputmode="numeric" autofocus></label>
+      <button>Save</button> <button type="button" class="link" data-act="timer-discard">Discard this session</button></p></form>`;
+}
+
 /** One book in hand: today's pages against its share, the controls, and where it stands. */
 function deskRow(b) {
   const e = effective(b), page = currentPage(evs(b.id)), today = Math.max(0, pagesToday(b.id));
@@ -769,7 +789,9 @@ function deskRow(b) {
   return html`<li class="entry ${open ? "open" : ""}" data-id="${b.id}">
     ${coverImg(b, "thumb") || raw('<span class="thumb blank"></span>')}
     <span class="who"><a class="t" href="#/book/${b.id}" title="${e.title}"><i>${shortTitle(e.title)}</i></a><span class="a sc">${e.author}</span></span>
-    <span class="todaycol ${planned && today >= planned ? "met" : ""}" data-planned="${planned}">${done
+    <span class="todaycol ${planned && today >= planned ? "met" : ""}" data-planned="${planned}">${S.timer?.bookId === b.id
+      ? html`<span class="clock" data-start="${S.timer.start}">● ${clockText(S.timer.start)}</span><button class="link strong" data-act="timer-stop" data-id="${b.id}">Stop</button>`
+      : done
       ? html`<button class="link strong" data-act="status" data-id="${b.id}" data-to="read">Mark as finished</button>`
       : !planned && !today ? html`<span class="rest">nothing due today</span>`
       : html`<b>${today}</b> of ${Math.max(planned, today)} pp<span class="meter"><i style="${`width:${tpct.toFixed(0)}%`}"></i></span>`}</span>
@@ -783,7 +805,9 @@ function deskRow(b) {
     <span class="prog">${page ? `p. ${page}${e.pages ? ` of ${e.pages.toLocaleString("en-GB")}` : ""}` : `not begun${e.pages ? ` · ${e.pages} pages` : ""}`}${fw && !done ? (fw.plain ? ` · ${fw.short}` : ` · finishes ${fw.short}`) : ""}
       ${undoToday ? html` · <button class="link" data-act="undo" data-id="${b.id}">Undo p. ${undo.prevPage} → ${undo.page}</button>` : ""}
       <button class="link more" data-act="row-more" data-id="${b.id}" aria-expanded="${open ? "true" : "false"}">${open ? "less" : "more"}</button>
+      ${!S.timer && !done ? html`<button class="link timego" data-act="timer-start" data-id="${b.id}" title="Time this reading session, so the app learns your pace">▶ time it</button>` : ""}
       <span class="meter"><i style="${`width:${pct.toFixed(1)}%`}"></i></span></span>
+    ${S.stopping?.bookId === b.id ? stopForm(b) : ""}
     ${open ? html`<div class="moreinfo">
       ${e.annotation ? html`<p class="q">“${e.annotation}”</p>` : ""}
       ${fw && !fw.plain ? html`<p>At your current pace, finishes ${fw.phrase}.</p>` : fw ? html`<p>${fw.phrase}</p>` : ""}
@@ -1274,6 +1298,7 @@ function describe(e) {
     if (e.to === "reading") return e.from === "paused" ? "Resumed" : e.from === "read" ? "Begun again" : "Begun";
     return { want: "Returned to the list", paused: "Paused", read: "Finished", abandoned: "Set aside" }[e.to];
   }
+  if (e.type === "session") return `Timed: ${L.duration(e.minutes)}, p. ${e.fromPage} → ${e.toPage}${e.capped ? " (timer left running)" : ""}`;
   if (e.type === "note") return `“${e.text}”${e.page ? ` (p. ${e.page})` : ""}`;
   return e.type;
 }
@@ -1439,7 +1464,9 @@ function paceText(b) {
   const p = derived().p, D = M.difficultyOf(b, p).D;
   const pp = 10 * M.pagesPerToken(D, p), min = M.minutesPerPage(D, p);
   const q = x => (x >= 10 ? Math.round(x) : Math.round(x * 2) / 2);
-  return raw(`about ${q(pp)} pages for 10 tokens <span class="quiet small">(≈ ${q(min)} min a page)</span>`);
+  const mine = CB.bookPace(b, S.byBook, p);
+  const measured = mine ? `<br><span class="small">Timed: about ${mine.mpp.toFixed(1)} min a page over ${plural(mine.n, "session")} <span class="quiet">(the model says ${min.toFixed(1)})</span></span>` : "";
+  return raw(`about ${q(pp)} pages for 10 tokens <span class="quiet small">(≈ ${q(min)} min a page)</span>${measured}`);
 }
 
 function shareBlock(b) {
@@ -1512,6 +1539,17 @@ function viewImport() {
     <p class="quiet small">A copy of your library is kept first, so this can be undone from Settings › Earlier copies.</p>`;
 }
 
+/** What your timed sessions say about your speeds, and the offer to use them. */
+function paceBlock() {
+  const p = derived().p, c = CB.calibrate(books(), S.byBook, p);
+  const undo = S.prevModel ? html` <button class="link" data-act="undo-pace">Put back the previous pace</button>` : "";
+  if (!c) return html`<p class="small"><b>Your own pace.</b> Press <i>▶ time it</i> on a book on the Desk when you sit down to read, and <i>Stop</i> when you finish. After a few sessions, across easy and harder books, your measured speeds appear here to use in place of the model's.${undo}</p>`;
+  const same = Math.abs(c.v1 - p.v1) < 10 && Math.abs(c.v10 - p.v10) < 5;
+  const sure = { rough: "a first, rough reading", fair: "a fair reading", good: "a good reading" }[c.sure];
+  return html`<div class="pace notice quiet"><p><b>Your measured pace</b>, from ${plural(c.n, "timed session")} (about ${L.duration(c.minutes)}): about <b>${c.v1}</b> words a minute on easy prose and <b>${c.v10}</b> on dense text. That's ${sure}${c.spread < 3 ? "; time a book of a different difficulty to firm up the gap between easy and hard" : ""}.</p>
+    <p>${same ? "That's what the model uses now." : c.ready ? html`<button data-act="use-pace">Use these</button> <span class="small">(now ${p.v1} and ${p.v10}). Daily pages and finish dates follow; nothing else changes.</span>` : html`<span class="small">A couple more sessions and you can use it (now ${p.v1} and ${p.v10}).</span>`}${undo}</p></div>`;
+}
+
 function viewSettings() {
   const counts = `${plural(S.books.size, "book")}, ${plural(S.events.length, "history entry", "history entries")}`;
   const auto = S.auto;
@@ -1567,6 +1605,7 @@ function viewSettings() {
         <p><button>Save</button></p>
       </form>
       <p class="quiet small">A page of difficulty 1 takes about ${M.minutesPerPage(1, derived().p).toFixed(2)} minutes; difficulty 10, about ${M.minutesPerPage(10, derived().p).toFixed(1)}.</p>
+      ${paceBlock()}
     </section>
 
     <section><h2 class="sc small">The Mac helper</h2>${helperBlock()}</section>
@@ -1649,6 +1688,31 @@ async function act(name, d) {
       const mine = { ...b.mine }; delete mine.grEdition;
       S.notice = "Back to the Goodreads edition.";
       return commit({ books: [patchBook(b, { mine }, t)] });
+    }
+    case "timer-start": {
+      S.timer = { bookId: d.id, start: t, startPage: currentPage(evs(d.id)) };
+      await store.setMeta("timer", S.timer);
+      return render();
+    }
+    case "timer-stop": {
+      if (!S.timer) return;
+      S.stopping = { ...S.timer, end: t };
+      S.timer = null; await store.setMeta("timer", null);
+      render(); document.querySelector(".stopform input")?.focus(); return;
+    }
+    case "timer-discard": S.stopping = null; S.notice = "Session discarded."; return render();
+    case "use-pace": {
+      const c = CB.calibrate(books(), S.byBook, derived().p);
+      if (!c) return;
+      S.prevModel = { ...S.settings.model };
+      S.notice = `Now using your measured pace: about ${c.v1} words a minute on easy prose, ${c.v10} on dense. Finish dates and daily pages follow.`;
+      return commit({ settings: { ...S.settings, model: { ...S.settings.model, v1: c.v1, v10: c.v10 }, updatedAt: t } });
+    }
+    case "undo-pace": {
+      if (!S.prevModel) return;
+      const m = S.prevModel; S.prevModel = null;
+      S.notice = "The previous pace is back.";
+      return commit({ settings: { ...S.settings, model: m, updatedAt: t } });
     }
     case "row-more": S.openRow = S.openRow === d.id ? null : d.id; return render();
     case "gs-installed": return commit({ settings: gsDone("installed") || S.settings });
@@ -1831,6 +1895,23 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "timer-save": {
+      const st = S.stopping; if (!st) return;
+      const pages = effective(b).pages;
+      const to = Math.max(st.startPage, Math.min(Math.round(+f.get("page") || 0), pages || Infinity));
+      const len = CB.sessionLength(st.start, st.end);
+      const cur = currentPage(evs(b.id));
+      const events = [{ id: eventId(), bookId: b.id, at: st.end, type: "session", start: st.start, minutes: len.minutes, fromPage: st.startPage, toPage: to, capped: len.capped, source: "app" }];
+      let patch = null;
+      if (to > cur) {
+        const r = logPage(b, evs(b.id), to, st.end);
+        if (r) { events.push(...r.events); patch = r.patch; }
+      }
+      S.stopping = null;
+      const n = to - st.startPage;
+      S.notice = n > 0 ? `Timed: ${n} ${n === 1 ? "page" : "pages"} in ${L.duration(len.minutes)}${len.capped ? "" : ` (about ${(len.minutes / n).toFixed(1)} min a page)`}.` : "Session saved; no pages, so nothing to learn from it.";
+      return commit({ events, books: patch ? [patchBook(b, patch, t)] : [] });
+    }
     case "place": {
       const v = f.get("page"), cur = currentPage(evs(b.id)), pages = effective(b).pages;
       if (v === "" || isNaN(+v)) return;
@@ -2048,7 +2129,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.3.4";
+export const APP_VERSION = "1.4.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

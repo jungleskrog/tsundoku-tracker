@@ -353,3 +353,11 @@ html[data-view="desk"] { --measure: 48rem; }
 form.placeform { margin: .4rem 0 1rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 form.placeform input { width: 5em; }
 form.placeform .quiet { flex-basis: 100%; }
+
+/* 1.4: timed sessions */
+ul.hand .prog .timego { float: right; margin-right: .9rem; font-size: .8rem; }
+ul.hand .clock { display: block; color: var(--accent); font-variant-numeric: tabular-nums; }
+ul.hand li.entry:has(.clock) { background: var(--accent-soft); }
+form.stopform p { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+form.stopform input { width: 5em; }
+.pace p { margin: .3rem 0; }

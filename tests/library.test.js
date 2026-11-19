@@ -74,3 +74,11 @@ test("commonplace: your own lines and margin notes, by year; Goodreads quotes ar
   assert.equal(years[0][0], 2026);
   assert.deepEqual(years[0][1].map(x => [x.kind, x.text]).sort(), [["line", "Mine."], ["note", "a note"]]);
 });
+
+test("shelf letter: two books read on the same days say when only once", () => {
+  const books = [book("x", { status: "reading" }), book("y", { status: "reading" })];
+  const events = [ev("x", at(19, 15), { type: "progress", page: 60, prevPage: 0 }), ev("y", at(19, 15), { type: "progress", page: 5, prevPage: 0 })];
+  const f = weekFacts({ books, byBook: eventsByBook(events), p, start: weekStart(at(19)) });
+  const text = shelfLetter(f, { ital: t => `*${t}*` }).join(" ");
+  assert.equal((text.match(/Thursday afternoon/g) || []).length, 1, text);
+});

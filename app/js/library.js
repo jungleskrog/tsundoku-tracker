@@ -201,7 +201,9 @@ export function shelfLetter(f, { outlook = null, ital = t => t, esc = t => t } =
   const I = t => ital(esc(t));
   const out = [];
   const perDay = r => duration(r.minutes / Math.max(1, r.days));   // minutes on an average reading day
-  const gave = f.reading.slice(0, 2).map((r, k) => `${k ? "" : "about "}${perDay(r)} ${often(r)} to ${I(r.title)}`);
+  // a second book read on the same days doesn't repeat "most evenings" / "on Thursday afternoon"
+  const top = f.reading.slice(0, 2);
+  const gave = top.map((r, k) => `${k ? "" : "about "}${perDay(r)}${k && often(r) === often(top[0]) ? "" : ` ${often(r)}`} to ${I(r.title)}`);
   const fin = f.finished.map(x => `${I(x.title)} on ${weekday(x.at)}`);
   const finText = fin.length ? `finished ${fin.slice(0, -1).join(", ")}${fin.length > 1 ? " and " : ""}${fin.at(-1)}` : "";
   if (gave.length) {
