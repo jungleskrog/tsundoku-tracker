@@ -276,3 +276,67 @@ form.note input { flex: 1 1 14rem; font: inherit; font-style: italic; padding: .
 .welcome p { line-height: 1.6; }
 .about h2 { margin-top: 1.6rem; }
 .about p { max-width: 36rem; }
+
+/* Stage 10: the Desk as a dashboard */
+.today { display: grid; grid-template-columns: auto 1fr; gap: 6px 22px; align-items: center; padding: 16px 20px; background: var(--panel); border: 1px solid var(--rule); margin: 0 0 4px; }
+.today .big { line-height: 1; white-space: nowrap; }
+.today .big .n { font-size: 2.6rem; font-weight: 300; font-variant-numeric: tabular-nums; }
+.today .big small { font-size: 1.05rem; color: var(--quiet); }
+.today .lbl { font-size: .75rem; color: var(--quiet); margin-top: 4px; }
+.meter { display: block; height: 6px; background: var(--rule); position: relative; overflow: hidden; }
+.meter i { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.today .words { margin: 8px 0 0; font-size: .98rem; }
+.today .words .quiet { font-size: .88rem; }
+.figs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--rule); margin: 0 0 22px; }
+.figs > div { padding: 10px 0 12px; min-width: 0; }
+.figs > div + div { border-left: 1px solid var(--rule); padding-left: 14px; }
+.figs a { color: inherit; text-decoration: none; display: block; }
+.figs a:hover .l { color: var(--accent); }
+.figs .n { display: block; font-size: 1.45rem; font-variant-numeric: tabular-nums; }
+.figs .n.t { font-size: 1rem; line-height: 1.3; padding-top: .3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.figs .l { display: block; font-size: .72rem; color: var(--quiet); }
+h2.deskhead { display: flex; justify-content: space-between; margin: 0 0 4px; }
+ul.hand { list-style: none; margin: 0 0 24px; padding: 0; }
+ul.hand li.entry { display: grid; grid-template-columns: 32px minmax(0, 1fr) 128px auto; grid-template-areas: "cover who today btns" "cover prog today btns" "more more more more"; gap: 2px 14px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--rule); }
+ul.hand .thumb { grid-area: cover; width: 32px; height: 46px; object-fit: cover; border: 1px solid var(--rule); float: none; margin: 0; background: var(--panel); align-self: start; }
+ul.hand .thumb.blank { display: block; }
+ul.hand .who { grid-area: who; min-width: 0; }
+ul.hand .who .t { display: block; font-size: 1.08rem; color: var(--ink); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ul.hand .who .a { display: block; font-size: .72rem; color: var(--quiet); }
+ul.hand .prog { grid-area: prog; font-size: .8rem; color: var(--quiet); }
+ul.hand .prog .meter { height: 2px; margin-top: 5px; }
+ul.hand .prog .more { float: right; font-size: .8rem; }
+ul.hand .todaycol { grid-area: today; text-align: right; font-size: .85rem; color: var(--quiet); }
+ul.hand .todaycol b { font-size: 1.2rem; font-weight: 400; color: var(--ink); font-variant-numeric: tabular-nums; }
+ul.hand .todaycol.met b { color: var(--accent); }
+ul.hand .todaycol .meter { height: 3px; margin-top: 6px; }
+ul.hand .btns { grid-area: btns; display: flex; gap: 6px; align-items: center; }
+ul.hand .btns button { min-width: 38px; min-height: 36px; padding: 0 6px; }
+ul.hand .pageform input { width: 3.6em; min-height: 36px; }
+ul.hand .moreinfo { grid-area: more; font-size: .9rem; color: var(--quiet); padding: 6px 0 0 46px; }
+ul.hand .moreinfo p { margin: .25rem 0; }
+ul.hand .moreinfo .q { font-style: italic; }
+p.next { margin: 0 0 24px; line-height: 1.6; }
+p.next a { color: var(--ink); text-decoration-color: var(--rule); }
+p.next a.all { color: var(--accent); margin-left: .6rem; white-space: nowrap; }
+.deskfoot { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: .85rem; color: var(--quiet); border-top: 1px solid var(--ink); padding-top: 10px; }
+.deskfoot a.warn { color: var(--accent); font-weight: 600; }
+
+@media (max-width: 640px) {
+  /* a tab bar at the foot of the screen, within thumb's reach */
+  .masthead .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; justify-content: space-around; gap: 0; background: var(--panel); border-top: 1px solid var(--rule); padding: 10px 4px calc(10px + env(safe-area-inset-bottom)); }
+  .masthead .tabs a { font-size: .9rem; padding: 4px 6px; border-bottom: 0; }
+  .masthead .tabs a.on { color: var(--accent); border-bottom: 0; }
+  .page { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
+  .today { grid-template-columns: 1fr; padding: 14px 16px; }
+  .figs { grid-template-columns: repeat(2, 1fr); }
+  .figs > div:nth-child(3) { border-left: 0; padding-left: 0; }
+  .figs > div:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+  ul.hand li.entry { grid-template-columns: 32px minmax(0, 1fr) auto; grid-template-areas: "cover who today" "cover prog prog" "btns btns btns" "more more more"; }
+  ul.hand .btns { justify-content: flex-end; margin-top: 6px; }
+  ul.hand .btns button { min-width: 46px; min-height: 44px; }
+  ul.hand .pageform input { width: 4.2em; min-height: 44px; }
+  ul.hand .moreinfo { padding-left: 0; }
+}
+@media print { .masthead .tabs { position: static; } }
+ul.hand .todaycol .rest { font-size: .8rem; font-style: italic; }

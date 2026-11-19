@@ -16,6 +16,8 @@ import * as G from "./goodreads.js";
 import * as L from "./library.js";
 import * as Y from "./year.js";
 import { eventId } from "./ids.js";
+import * as DB from "./dropbox.js";
+import { DROPBOX_APP_KEY } from "./config.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
 const S = {
@@ -25,7 +27,8 @@ const S = {
   helper: { connected: false, status: null, estimate: null, asks: [] },
   menu: null, listNote: null, undoOrder: null, focusRow: null,
   bmHref: null, bmInbox: [], paste: false,
-  noteFor: null, letterSeen: null,
+  noteFor: null, letterSeen: null, openRow: null,
+  sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false, pasting: false },
 };
 
 const now = () => new Date().toISOString();
@@ -101,6 +104,7 @@ async function commit({ books: putBooks = [], events: putEvents = [], removeEven
   });
   await store.setMeta("lastChangeAt", t);
   scheduleAutoBackup();
+  scheduleSync();
   render();
 }
 
@@ -145,6 +149,105 @@ async function syncWithAutoFile() {
     }
   }
   await writeAutoNow();
+}
+
+// --- Sync through Dropbox ----------------------------------------------------------------
+
+const appKey = () => DROPBOX_APP_KEY || S.settings?.dropboxAppKey || "";
+const appBase = () => location.origin + location.pathname.replace(/[^/]*$/, "");
+const iosHomeScreen = () => navigator.standalone === true;
+let syncTimer = null;
+
+function scheduleSync(ms = 2000) {
+  if (!S.sync.rec) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => guard(syncNow()), ms);
+}
+
+/** One round with Dropbox: bring in the other devices' changes, send ours. */
+async function syncNow() {
+  if (!S.sync.rec) return;
+  if (S.sync.busy) { S.sync.again = true; return; }
+  S.sync.busy = true; S.sync.state = "syncing";
+  try {
+    let rec = await DB.freshToken(S.sync.rec);
+    const r = await DB.syncOnce({
+      access: rec.access, local: archive, merge: mergeArchives,
+      prepare: a => { const problem = validateArchive(a); if (problem) throw new Error(problem); return migrate(a); },
+      accept: async m => {
+        const merged = mergeArchives(archive(), m); // anything changed here meanwhile is kept
+        if (merged.stats.booksAdded + merged.stats.booksUpdated > 20) await store.snapshot("before bringing in changes from Dropbox", archive());
+        await store.replaceAll(merged);
+        load(merged);
+      },
+    });
+    S.sync.rec = { ...rec, rev: r.rev };
+    await store.setMeta("dropbox", S.sync.rec);
+    S.sync.last = now(); S.sync.state = "on"; S.sync.error = null;
+    await store.setMeta("dropboxLast", S.sync.last);
+  } catch (e) {
+    S.sync.state = e instanceof DB.SignedOut ? "signedout" : navigator.onLine === false ? "offline" : "error";
+    S.sync.error = e.message;
+  } finally {
+    S.sync.busy = false;
+    render();
+    if (S.sync.again) { S.sync.again = false; scheduleSync(500); }
+  }
+}
+
+async function startDropbox() {
+  if (!appKey()) { S.notice = "Dropbox sync isn't set up for this copy of the app yet (see the README)."; return render(); }
+  const paste = iosHomeScreen() || S.sync.pasting;
+  const { url, pending } = await DB.signInUrl(appKey(), paste ? null : appBase());
+  await store.setMeta("dropboxPending", pending);
+  if (paste) { S.sync.pasting = true; window.open(url, "_blank"); return render(); }
+  location.href = url;
+}
+
+async function finishDropbox(code) {
+  const pending = await store.getMeta("dropboxPending");
+  if (!pending) throw new Error("Start again: the sign-in had expired.");
+  const rec = await DB.finishSignIn(pending, code);
+  await store.setMeta("dropboxPending", null);
+  S.sync.rec = rec; S.sync.pasting = false;
+  await store.setMeta("dropbox", rec);
+  S.notice = "Signed in to Dropbox. This device now syncs by itself; sign in on your other devices too.";
+  await syncNow();
+}
+
+/** Coming back from Dropbox's sign-in page with ?code=… */
+async function dropboxReturn() {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("code") && !q.get("error")) return;
+  history.replaceState(null, "", appBase() + (location.hash || "#/settings"));
+  if (q.get("error")) { S.notice = "Dropbox sign-in was cancelled."; return; }
+  const pending = await store.getMeta("dropboxPending");
+  if (!pending || pending.state !== q.get("state")) { S.notice = "That Dropbox sign-in didn't match; try again from Settings."; return; }
+  await finishDropbox(q.get("code")).catch(e => { S.notice = `Dropbox: ${e.message}`; });
+}
+
+function syncWords() {
+  const sy = S.sync;
+  if (!sy.rec) return null;
+  if (sy.state === "syncing") return "Syncing…";
+  if (sy.state === "signedout") return "Dropbox needs you to sign in again";
+  if (sy.state === "offline") return "Offline; will sync when back";
+  if (sy.state === "error") return `Sync paused: ${sy.error}`;
+  return sy.last ? `Synced ${relativeDay(sy.last).replace(/^today at /, "at ")}` : "Synced";
+}
+
+function syncBlock() {
+  const sy = S.sync;
+  if (!appKey()) return html`<p class="quiet">Dropbox sync isn't set up for this copy of the app. Whoever hosts it registers a Dropbox app once (see the README); then everyone signs in with their own Dropbox.</p>`;
+  if (!sy.rec) return html`
+    <p>Keep this library the same on your phone, your Mac and anywhere else. Sign in to Dropbox on each device: the library is kept as one file in <i>Dropbox › Apps</i>, and every change is merged in, so nothing is lost if two devices change at once.</p>
+    <p><button data-act="sync-start">Sign in to Dropbox</button> ${!sy.pasting ? html`<button class="link" data-act="sync-paste-mode">Use a code instead</button>` : ""}</p>
+    ${sy.pasting ? html`<form data-form="sync-code" class="inline"><label>Code from Dropbox <input name="code" autocomplete="off" required></label> <button>Connect</button></form>
+      <p class="quiet small">Dropbox opens in a new page; sign in, allow it, and paste the code it shows here. (A home-screen app on an iPhone can't be sent back to, so it uses this way.)</p>` : ""}`;
+  return html`
+    <p>${syncWords()}. This device syncs by itself when you open the app, after each change, and every few minutes.</p>
+    <p><button data-act="sync-now">Sync now</button> <button class="link" data-act="sync-stop">Stop syncing on this device</button></p>
+    ${sy.state === "signedout" ? html`<p><button data-act="sync-start">Sign in again</button></p>` : ""}`;
 }
 
 // --- The Mac helper ------------------------------------------------------------------
@@ -412,9 +515,14 @@ async function boot() {
       if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
     S.letterSeen = await store.getMeta("letterSeen");
+    S.sync.rec = (await store.getMeta("dropbox")) || null;
+    S.sync.last = (await store.getMeta("dropboxLast")) || null;
+    if (S.sync.rec) S.sync.state = "on";
     S.ready = true;
     for (const p of S.bmInbox.splice(0)) takeBookmarklet(p);
     loadBookmarklet();
+    await dropboxReturn();
+    if (S.sync.rec) guard(syncNow());
     connectHelper();
   } catch (e) {
     S.error = e.message || String(e);
@@ -440,7 +548,7 @@ function notices() {
   if (S.auto.handle && S.auto.state === "prompt") {
     out.push(html`<p class="notice">Your backup file needs permission again. <button class="link" data-act="auto-reconnect">Reconnect it</button></p>`);
   }
-  if (S.ready && S.books.size && !S.auto.handle) {
+  if (S.ready && S.books.size && !S.auto.handle && !S.sync.rec && route()[0] !== "desk") {
     const last = S.settings.lastExportAt;
     if (!last || Date.now() - new Date(last) > 30 * 864e5) {
       out.push(html`<p class="notice quiet">Your library lives only in this browser. <a href="#/settings">Keep a backup</a>.</p>`);
@@ -462,53 +570,6 @@ function lastActivity(bookId) {
 function progressRule(page, pages) {
   const pct = pages ? Math.min(100, (page / pages) * 100) : 0;
   return html`<div class="rule" role="img" aria-label="${pages ? Math.round(pct) + "% read" : "page count unknown"}"><i style="width:${pct.toFixed(1)}%"></i></div>`;
-}
-
-function deskEntry(b) {
-  const e = effective(b), page = currentPage(evs(b.id)), today = pagesToday(b.id);
-  const f = derived().fc.get(b.id) || {};
-  const planned = Math.round(Math.max(0, today) + pagesFromTokens(b.id, f.todayTokens || 0));
-  const fin = finishWords(b.id);
-  const undo = [...evs(b.id)].reverse().find(x => x.type === "progress" && x.source === "app");
-  const done = e.pages && page >= e.pages;
-  return html`<article class="entry">
-    ${coverImg(b, "thumb")}
-    <a class="t" href="#/book/${b.id}">${e.title}</a>
-    <div class="a sc">${[e.author, e.year].filter(Boolean).join(" · ")}</div>
-    ${quoteLine(e, "q")}
-    ${progressRule(page, e.pages)}
-    <div class="row">
-      <span class="where">${planned > 0 || today > 0
-        ? raw(`<b>${today > 0 ? `${today} of ${Math.max(planned, today)}` : planned} ${Math.max(planned, today) === 1 ? "page" : "pages"} today</b> · `) : ""}${page ? `page ${page}${e.pages ? ` of ${e.pages}` : ""}` : `not begun${e.pages ? ` · ${e.pages} pages` : ""}`}</span>
-      <span class="btns">
-        <button data-act="add" data-id="${b.id}" data-n="1" aria-label="Add one page">+1</button>
-        <button data-act="add" data-id="${b.id}" data-n="2" aria-label="Add two pages">+2</button>
-        <button data-act="add" data-id="${b.id}" data-n="5" aria-label="Add five pages">+5</button>
-        <form class="pageform" data-form="page" data-id="${b.id}">
-          <label class="vh" for="p-${b.id}">Page reached</label>
-          <input id="p-${b.id}" name="page" type="number" inputmode="numeric" min="0" ${e.pages ? raw(`max="${e.pages}"`) : ""} placeholder="p." autocomplete="off">
-        </form>
-      </span>
-    </div>
-    ${fin && !done ? html`<p class="when">${fin.plain ? fin.phrase : `At your current pace, finishes ${fin.phrase}.`}</p>` : ""}
-    ${S.noteFor === b.id ? noteForm(b, page) : ""}
-    <div class="fin">
-      ${done ? raw(`<button class="link strong" data-act="status" data-id="${esc(b.id)}" data-to="read">Mark as finished</button> · `) : ""}
-      ${S.noteFor !== b.id ? raw(`<button class="link" data-act="note-open" data-id="${esc(b.id)}">Note in the margin</button>${undo ? " · " : ""}`) : ""}
-      ${undo ? raw(`<button class="link" data-act="undo" data-id="${esc(b.id)}">Undo p. ${undo.prevPage} → ${undo.page}</button> <span class="quiet">(${esc(relativeDay(undo.at))})</span>`) : ""}
-    </div>
-  </article>`;
-}
-
-function ledgerBlock(reading) {
-  const d = derived(), goal = S.settings.dailyTokens;
-  const today = d.ledger ? d.ledger.todayTokens : 0;
-  const ref = reading.map(b => [b, d.fc.get(b.id)]).filter(([, f]) => f && f.tpp).sort((a, b) => (b[1].share || 0) - (a[1].share || 0))[0];
-  const words = d.ledger ? M.ledgerWords(d.ledger, goal, ref ? effective(ref[0]).title : null, ref ? ref[1].tpp : null) : null;
-  return html`<div class="ledger">
-    <p>${words ? words.text : "The ledger begins with your first entry."}
-      <span class="quiet">${today >= goal ? `Today's ${goal} tokens are read.` : today > 0 ? `Today: ${Math.round(today * 10) / 10} of ${goal} tokens.` : `Today: none of ${goal} tokens yet.`}${d.ledger ? (d.ledger.days < 28 ? ` Counted since ${shortDate(d.firstUse)}.` : " Counted over the last 28 days.") : ""}</span></p>
-  </div>`;
 }
 
 // --- Getting started (new libraries) and How it works ------------------------------------
@@ -578,27 +639,117 @@ function viewAbout() {
 }
 
 function viewDesk() {
-  const reading = books().filter(b => b.status === "reading").sort((a, b) => (lastActivity(b.id) > lastActivity(a.id) ? 1 : -1));
-  const next = waiting().slice(0, O.bandsOf(S.settings).next);
+  const reading = books().filter(b => b.status === "reading").sort((a, b) => (derived().fc.get(b.id)?.share || 0) - (derived().fc.get(a.id)?.share || 0) || (lastActivity(b.id) > lastActivity(a.id) ? 1 : -1));
   const empty = !S.books.size;
   return html`
     <div class="dateline sc"><span>${longDate(new Date())}</span><span>The Desk</span></div>
     ${empty ? html`<section class="welcome">
       <h1>Nothing piled up yet</h1>
       <p><i>Tsundoku</i> is the Japanese word for buying books and letting them pile up unread. This keeps the pile in order: one list of the books you mean to read, how much effort each takes, and a quiet record of what you read.</p>
-      <p>Your library stays in this browser. Nothing is sent anywhere unless you set up the optional helper. <a href="#/about">How it works</a></p>
+      <p>Your library stays in this browser. Nothing is sent anywhere unless you set up sync or the optional helper. <a href="#/about">How it works</a></p>
     </section>${gettingStarted()}` : html`
     ${gettingStarted()}
-    <h1>In hand</h1>
-    ${reading.length ? reading.map(deskEntry) : html`<p class="quiet">Nothing in hand. Begin something from the list below.</p>`}
-    ${ledgerBlock(reading)}
-    ${letterLine()}
-    <h2 class="sc small">Next on the shelf</h2>
-    <ol class="shelf">${next.map((b, i) => { const e = effective(b); return html`<li>
-      <span class="n">${i + 1}</span><a href="#/book/${b.id}"><i>${e.title}</i> <span class="quiet">${e.author}</span>
-        ${startWords(b.id) ? html`<span class="d">begins ${startWords(b.id).short}</span>` : ""}${quoteLine(e, "q small")}</a>
-      <button class="link" data-act="status" data-id="${b.id}" data-to="reading">Begin</button></li>`; })}</ol>
-    <p><a href="#/list">The whole list</a> · <a href="#/add">Add a book</a>${grCount() ? html` · <a href="#/goodreads">${plural(grCount(), "change")} to make on Goodreads</a>` : ""}</p>`}`;
+    ${todayBlock()}
+    ${figures(reading)}
+    <h2 class="sc small deskhead"><span>In hand</span>${reading.length ? html`<span>today</span>` : ""}</h2>
+    ${reading.length ? html`<ul class="hand">${reading.map(deskRow)}</ul>` : html`<p class="quiet">Nothing in hand. Begin the first book below, or any from <a href="#/list">the list</a>.</p>`}
+    ${upNext(reading.length)}
+    ${deskFooter()}`}`;
+}
+
+/** Today: tokens read against the day's goal, in one number and a bar, and where you stand. */
+function todayBlock() {
+  const d = derived(), goal = S.settings.dailyTokens;
+  const today = d.ledger ? d.ledger.todayTokens : 0;
+  const pct = Math.min(100, (today / goal) * 100);
+  const left = Math.max(0, goal - today) * S.settings.minutesPerToken;
+  const l = d.ledger, mag = l ? Math.abs(l.balance) : 0;
+  const stand = !l ? "The record begins with your first entry." : mag < 0.5 * goal ? "On course." : mag < 2 * goal ? `A little ${l.balance > 0 ? "ahead" : "behind"}.` : `About ${Math.round(mag / goal)} days' reading ${l.balance > 0 ? "ahead" : "behind"}.`;
+  const shown = Math.round(today * 10) / 10;
+  return html`<section class="today" aria-label="Today">
+    <div class="big"><span class="n">${shown}</span><small> / ${goal}</small><div class="lbl sc">tokens today</div></div>
+    <div><div class="meter" role="img" aria-label="${`${Math.round(pct)}% of today's tokens`}"><i style="${`width:${pct.toFixed(1)}%`}"></i></div>
+      <p class="words">${stand} <span class="quiet">${today >= goal ? "Today's reading is done." : `About ${L.duration(left)} left today.`}</span></p></div>
+  </section>`;
+}
+
+function figures(reading) {
+  const d = derived(), year = new Date().getFullYear();
+  const readThisYear = S.events.filter(e => e.type === "status" && e.to === "read" && new Date(e.at).getFullYear() === year).length;
+  const soonest = reading.map(b => [b, d.fc.get(b.id)]).filter(([, f]) => f && f.finish != null && !f.beyond).sort((a, b) => a[1].finish - b[1].finish)[0];
+  const fw = soonest && finishWords(soonest[0].id);
+  return html`<div class="figs">
+    <div><span class="n">${reading.length}</span><span class="l sc">in hand</span></div>
+    <div><a href="#/list"><span class="n">${waiting().length}</span><span class="l sc">waiting</span></a></div>
+    <div><a href="#/year"><span class="n">${readThisYear}</span><span class="l sc">read in ${year}</span></a></div>
+    <div>${soonest ? html`<a href="#/book/${soonest[0].id}"><span class="n t"><i>${shortTitle(effective(soonest[0]).title)}</i></span><span class="l sc">next to finish${fw ? ` · ${fw.short}` : ""}</span></a>` : html`<span class="n">—</span><span class="l sc">next to finish</span>`}</div>
+  </div>`;
+}
+
+/** One book in hand: today's pages against its share, the controls, and where it stands. */
+function deskRow(b) {
+  const e = effective(b), page = currentPage(evs(b.id)), today = Math.max(0, pagesToday(b.id));
+  const f = derived().fc.get(b.id) || {};
+  const planned = Math.round(today + pagesFromTokens(b.id, f.todayTokens || 0));
+  const fw = finishWords(b.id);
+  const undo = [...evs(b.id)].reverse().find(x => x.type === "progress" && x.source === "app");
+  const undoToday = undo && localDayKey(undo.at) === localDayKey(now());
+  const done = e.pages && page >= e.pages;
+  const open = S.openRow === b.id;
+  const pct = e.pages ? Math.min(100, (page / e.pages) * 100) : 0;
+  const tpct = planned ? Math.min(100, (today / planned) * 100) : today ? 100 : 0;
+  return html`<li class="entry ${open ? "open" : ""}" data-id="${b.id}">
+    ${coverImg(b, "thumb") || raw('<span class="thumb blank"></span>')}
+    <span class="who"><a class="t" href="#/book/${b.id}" title="${e.title}"><i>${shortTitle(e.title)}</i></a><span class="a sc">${e.author}</span></span>
+    <span class="todaycol ${planned && today >= planned ? "met" : ""}" data-planned="${planned}">${done
+      ? html`<button class="link strong" data-act="status" data-id="${b.id}" data-to="read">Mark as finished</button>`
+      : !planned && !today ? html`<span class="rest">nothing due today</span>`
+      : html`<b>${today}</b> of ${Math.max(planned, today)} pp<span class="meter"><i style="${`width:${tpct.toFixed(0)}%`}"></i></span>`}</span>
+    <span class="btns">
+      <button data-act="add" data-id="${b.id}" data-n="1" aria-label="Add one page">+1</button>
+      <button data-act="add" data-id="${b.id}" data-n="2" aria-label="Add two pages">+2</button>
+      <button data-act="add" data-id="${b.id}" data-n="5" aria-label="Add five pages">+5</button>
+      <form class="pageform" data-form="page" data-id="${b.id}"><label class="vh" for="p-${b.id}">Page reached</label>
+        <input id="p-${b.id}" name="page" type="number" inputmode="numeric" min="0" ${e.pages ? raw(`max="${e.pages}"`) : ""} placeholder="p." autocomplete="off"></form>
+    </span>
+    <span class="prog">${page ? `p. ${page}${e.pages ? ` of ${e.pages.toLocaleString("en-GB")}` : ""}` : `not begun${e.pages ? ` · ${e.pages} pages` : ""}`}${fw && !done ? (fw.plain ? ` · ${fw.short}` : ` · finishes ${fw.short}`) : ""}
+      ${undoToday ? html` · <button class="link" data-act="undo" data-id="${b.id}">Undo p. ${undo.prevPage} → ${undo.page}</button>` : ""}
+      <button class="link more" data-act="row-more" data-id="${b.id}" aria-expanded="${open ? "true" : "false"}">${open ? "less" : "more"}</button>
+      <span class="meter"><i style="${`width:${pct.toFixed(1)}%`}"></i></span></span>
+    ${open ? html`<div class="moreinfo">
+      ${e.annotation ? html`<p class="q">“${e.annotation}”</p>` : ""}
+      ${fw && !fw.plain ? html`<p>At your current pace, finishes ${fw.phrase}.</p>` : fw ? html`<p>${fw.phrase}</p>` : ""}
+      ${S.noteFor === b.id ? noteForm(b, page) : ""}
+      <p>${S.noteFor !== b.id ? html`<button class="link" data-act="note-open" data-id="${b.id}">Note in the margin</button> · ` : ""}<a href="#/book/${b.id}">Open the book</a>
+        · <button class="link" data-act="status" data-id="${b.id}" data-to="paused">Pause</button></p>
+    </div>` : ""}
+  </li>`;
+}
+
+/** A title without its subtitle, for tight places: "Tolerance is a Wasteland". */
+const shortTitle = t => (t || "").split(/:\s|\s\(/)[0];
+
+function upNext(inHand) {
+  const next = waiting().slice(0, 3);
+  if (!next.length) return "";
+  return html`<h2 class="sc small deskhead"><span>Up next</span></h2>
+    <p class="next">${next.map((b, i) => html`${i ? " · " : ""}<a href="#/book/${b.id}"><i>${shortTitle(effective(b).title)}</i></a>`)}
+      ${!inHand ? html` <button class="link" data-act="status" data-id="${next[0].id}" data-to="reading">Begin the first</button>` : ""}
+      <a class="all" href="#/list">The whole list →</a></p>`;
+}
+
+/** The quiet line at the foot: the week, the letter, Goodreads, sync or backup. */
+function deskFooter() {
+  const d = derived();
+  const wk = L.weekFacts({ books: books(), byBook: S.byBook, p: d.p, start: L.weekStart(new Date()) });
+  const bits = [];
+  bits.push(html`<span>This week: ${wk.pages ? `${plural(wk.pages, "page")}, about ${L.duration(wk.minutes)}` : "no pages yet"}</span>`);
+  const letter = letterLine();
+  if (letter) bits.push(letter);
+  if (grCount()) bits.push(html`<a href="#/goodreads">${plural(grCount(), "change")} for Goodreads</a>`);
+  if (S.sync.rec) bits.push(html`<a href="#/settings#sync" class="${S.sync.state === "error" || S.sync.state === "signedout" ? "warn" : ""}">${syncWords()}</a>`);
+  else if (!S.auto.handle && (!S.settings.lastExportAt || Date.now() - new Date(S.settings.lastExportAt) > 30 * 864e5)) bits.push(html`<a href="#/settings#sync">Only in this browser: sync or back up</a>`);
+  return html`<div class="deskfoot">${bits}</div>`;
 }
 
 /** The book's line (Goodreads' most-liked quote, or your own note), shown beside it. */
@@ -961,7 +1112,7 @@ function letterLine() {
   const last = +L.weekStart(new Date()) - 7 * 864e5;
   if (S.letterSeen && +new Date(S.letterSeen) >= last) return "";
   const had = S.events.some(e => e.source === "app" && e.at >= new Date(last).toISOString() && e.at < new Date(last + 7 * 864e5).toISOString());
-  return had ? html`<p class="small"><a href="#/library#letters">The shelf letter for the week of ${shortDate(last)}</a></p>` : "";
+  return had ? html`<a href="#/library#letters">Last week's letter</a>` : "";
 }
 function markLetterSeen() {
   const last = new Date(+L.weekStart(new Date()) - 7 * 864e5).toISOString();
@@ -1248,6 +1399,8 @@ function viewSettings() {
     <div class="dateline sc"><span>${counts}</span><span>Settings</span></div>
     <h1>Settings</h1>
 
+    <section id="sync"><h2 class="sc small">Sync between devices</h2>${syncBlock()}</section>
+
     <section id="backup"><h2 class="sc small">Keeping your library safe</h2>
       <p>Your library lives in this browser. Nothing is sent anywhere.</p>
       ${backup.autoBackupSupported() ? html`
@@ -1344,6 +1497,16 @@ async function act(name, d) {
   switch (name) {
     case "dismiss": S.notice = null; return render();
     case "year-print": window.print(); return;
+    case "sync-start": return startDropbox();
+    case "sync-paste-mode": S.sync.pasting = true; return render();
+    case "sync-now": return syncNow();
+    case "sync-stop": {
+      await store.setMeta("dropbox", null);
+      S.sync = { ...S.sync, rec: null, state: "off", last: null, error: null };
+      S.notice = "This device no longer syncs. The library stays here, and the copy in Dropbox stays there.";
+      return render();
+    }
+    case "row-more": S.openRow = S.openRow === d.id ? null : d.id; return render();
     case "gs-installed": return commit({ settings: gsDone("installed") || S.settings });
     case "gs-show": return commit({ settings: { ...S.settings, gettingStarted: { ...(S.settings.gettingStarted || {}), show: true, dismissed: false }, updatedAt: t } });
     case "gs-hide": return commit({ settings: { ...S.settings, gettingStarted: { ...(S.settings.gettingStarted || {}), dismissed: true }, updatedAt: t } });
@@ -1524,6 +1687,10 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "sync-code": {
+      try { await finishDropbox(f.get("code") || ""); } catch (e) { S.notice = `Dropbox: ${e.message}`; }
+      return render();
+    }
     case "reader": {
       const name = (f.get("reader") || "").trim().slice(0, 60);
       S.notice = name ? `The title page now reads “The Reading Year of ${name}”.` : "The title page has no name.";
@@ -1721,7 +1888,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.0.0";
+export const APP_VERSION = "1.1.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

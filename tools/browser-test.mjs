@@ -99,9 +99,10 @@ try {
   await shot("3-desk");
 
   // the model on the desk
-  check((await text()).includes("At your current pace, finishes"), "each book in hand has a finish phrase");
-  check((await text()).includes("The ledger begins with your first entry"), "ledger waits for the first entry");
-  const plannedToday = () => evaluate("(() => { const m = document.querySelector('.entry .where b'); return m ? parseInt(m.textContent, 10) : 0; })()");
+  check(await evaluate("[...document.querySelectorAll('.entry .prog')].some(p => /finishes|pages unknown|Add a page count/.test(p.textContent))"), "each book in hand says when it finishes");
+  check((await text()).includes("The record begins with your first entry"), "the day's standing waits for the first entry");
+  check(await evaluate("!!document.querySelector('.today .meter') && document.querySelectorAll('.figs > div').length === 4"), "the Desk opens on today's tokens and four figures");
+  const plannedToday = () => evaluate("(() => { const m = document.querySelector('.entry .todaycol'); return m ? parseInt(m.dataset.planned, 10) : 0; })()");
   const before10 = await plannedToday();
   await go(`${BASE}/#/settings`); await until("!!document.querySelector('[data-form=tokens]')");
   await evaluate("(() => { const f = document.querySelector('[data-form=tokens]'); f.tokens.value = '20'; f.requestSubmit(); })()"); await sleep(200);
@@ -119,8 +120,9 @@ try {
   await click(`.entry [data-act=add][data-id='${firstId}'][data-n='5']`); await sleep(150);
   await click(`.entry [data-act=add][data-id='${firstId}'][data-n='2']`); await sleep(150);
   check((await page()) === p0 + 7, "+5 then +2 adds seven pages");
-  check(/On course|ahead|behind/.test(await text()), "the ledger speaks after the first entry");
-  check(/\b7 of \d+ pages today/.test(await text()), "today's pages shown against the plan");
+  check(/On course|ahead|behind/.test(await text()), "the day's standing speaks after the first entry");
+  check(/\b7 of \d+ pp/.test(await evaluate(`document.querySelector('.entry[data-id="${firstId}"] .todaycol').textContent`)), "today's pages shown against the plan");
+  check(parseFloat(await evaluate("document.querySelector('.today .n').textContent")) > 0, "today's tokens count up as you log");
   await click(`[data-act=undo][data-id='${firstId}']`); await sleep(150);
   check((await page()) === p0 + 5, "undo removes only the last entry");
   const total = await evaluate(`(() => { const b = window.__antilibrary.books.get('${firstId}'); return (b.mine && b.mine.pages) || (b.synced && b.synced.pages) || 0; })()`);
@@ -281,8 +283,17 @@ try {
     const wids = () => evaluate("[...document.querySelectorAll('li.row')].map(r => r.dataset.id)");
     // the book's line on the desk and the list
     await evaluate(`(() => { for (const b of ${A}.books.values()) if (b.status === 'want' || b.status === 'reading') b.synced = { ...(b.synced || {}), quote: 'A line for ' + b.id }; ${A}.version++; })()`);
-    await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('.q')");
-    check(await evaluate("[...document.querySelectorAll('.q')].some(q => q.textContent.startsWith('“A line for'))"), "the desk shows each book's quote beside it");
+    await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
+    let borrowed = null;
+    if (!(await evaluate("!!document.querySelector('[data-act=row-more]')"))) {   // nothing in hand: Up next offers to begin; hold one in hand for a moment (in memory only)
+      check(await evaluate("!!document.querySelector('.next [data-act=status][data-to=reading]')"), "with nothing in hand, Up next offers to begin the first");
+      borrowed = await evaluate(`(() => { const b = [...${A}.books.values()].find(b => b.status === 'want'); b.status = 'reading'; ${A}.version++; return b.id; })()`);
+      await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('[data-act=row-more]')");
+    }
+    await click("[data-act=row-more]"); await until("!!document.querySelector('.moreinfo .q')");
+    check(await evaluate("document.querySelector('.moreinfo .q').textContent.startsWith('“A line for')"), "a book's quote is one tap away on the desk");
+    await click("[data-act=row-more]"); await sleep(150);
+    if (borrowed) await evaluate(`(() => { ${A}.books.get('${borrowed}').status = 'want'; ${A}.version++; })()`);
     await go(`${BASE}/#/list`); await until("!!document.querySelector('li.row')");
     check(await evaluate("[...document.querySelectorAll('li.row .q')].length") > 0, "the list shows the quote under each waiting book");
     // a youth figure moves the book among its neighbours
@@ -346,8 +357,9 @@ try {
     check(await evaluate("document.title === 'Tsundoku Tracker' && document.querySelector('.brand').textContent === 'Tsundoku Tracker'"), "the app is called Tsundoku Tracker");
     if (!HELPER) {
       // a margin note from the desk
+      await click("[data-act=row-more]"); await until("!!document.querySelector('.moreinfo')");
       const inHand = await evaluate("document.querySelector('[data-act=note-open]') && document.querySelector('[data-act=note-open]').dataset.id");
-      check(!!inHand, "the desk offers a note in the margin");
+      check(!!inHand, "a book's 'more' on the desk offers a note in the margin");
       await click("[data-act=note-open]"); await until("!!document.querySelector('form[data-form=note]')");
       await evaluate("(() => { const f = document.querySelector('form[data-form=note]'); f.text.value = 'the chess game in the saloon'; f.requestSubmit(); })()"); await sleep(300);
       check(await evaluate(`${A}.events.some(e => e.type === 'note' && e.text === 'the chess game in the saloon' && e.bookId === '${inHand}')`), "the note is kept in the history");
@@ -440,6 +452,19 @@ try {
     const ab = await text();
     check(/Tokens, difficulty, pages/.test(ab) && /The Mac helper/.test(ab) && /Your data/.test(ab), "How it works explains the model, the helper and your data");
     await shot("22-about");
+  }
+
+  // Stage 10: sync settings, the phone's tab bar
+  {
+    await go(`${BASE}/#/settings`); await until("!!document.getElementById('sync')");
+    const sy = await evaluate("document.getElementById('sync').innerText");
+    check(/Sync between devices/.test(sy) && (/isn't set up for this copy/.test(sy) || /Sign in to Dropbox/.test(sy)), "Settings offers sync between devices");
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(300);
+    await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
+    const bar = await evaluate("(() => { const t = document.querySelector('.masthead .tabs'); const r = t.getBoundingClientRect(); return { pos: getComputedStyle(t).position, bottom: Math.round(r.bottom), h: window.innerHeight }; })()");
+    check(bar.pos === "fixed" && Math.abs(bar.bottom - bar.h) <= 2, "on a phone the tabs sit at the foot of the screen");
+    check(!(await evaluate("document.documentElement.scrollWidth > window.innerWidth + 1")), "the dashboard fits a phone");
+    await send("Emulation.clearDeviceMetricsOverride");
   }
 
   // phone width

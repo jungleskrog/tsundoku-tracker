@@ -56,6 +56,11 @@ When you open the app the first time, the Desk shows a short *Getting started* l
 
 Everything lives in your browser (IndexedDB) on that device.
 
+- **Sync between devices (Dropbox).** In *Settings › Sync between devices*, sign in to Dropbox on each device: your phone, your Mac, anywhere.
+  - The library is kept as one file in *Dropbox › Apps › Tsundoku Tracker*.
+  - Each device brings in the others' changes when the app opens, after every change, and every few minutes. Every entry is merged, so nothing is lost if two devices change at once.
+  - On an iPhone home-screen app, sign-in uses a code you paste, because iOS can't send the sign-in back to the app.
+
 - **Backup file (Chrome).** In *Settings › Keeping your library safe*, choose a file in Dropbox or iCloud Drive. Every change is then saved to it. Open the same file on another device to carry the library across: *Load from a copy… › Merge it in* keeps everything from both.
 - **Other browsers.** Use *Save a copy now* from time to time.
 - **Earlier copies.** The app keeps its own copies before any big change (an import, a reordering or a restore), and you can restore them from Settings.
@@ -150,6 +155,15 @@ If you use the helper with your own copy, tell the helper about your copy's addr
 
     export ANTILIBRARY_ORIGINS="https://<you>.github.io,http://localhost:8731"
 
+### Dropbox sync for your copy
+
+Sync needs a Dropbox app registered once by whoever hosts the copy. Everyone then signs in with their own Dropbox. The app key isn't a secret: sign-in uses PKCE, so there is nothing secret in the code.
+
+1. At <https://www.dropbox.com/developers/apps>, choose *Create app › Scoped access › App folder* and give it a name.
+2. *Permissions*: tick `files.content.write` and `files.content.read`, then *Submit*.
+3. *Settings › OAuth 2 › Redirect URIs*: add your copy's address (for example `https://<you>.github.io/<repo>/`) and `http://localhost:8731/`. Leave *Allow public clients* on.
+4. Put the *App key* in `app/js/config.js`.
+
 ## Development
 
     npm run serve                  # http://localhost:8731/
@@ -168,6 +182,8 @@ You need Node 22 or later and Chrome. There are no dependencies to install for t
       js/goodreads.js   the round trip: what to change on Goodreads, the bookmark's data
       js/library.js     colophons, the wall label, shelf letters, the commonplace book
       js/year.js        the printed year
+      js/dropbox.js     sync: Dropbox sign-in (PKCE), the library file, merge and retry
+      js/config.js      this copy's Dropbox app key
       js/store.js       IndexedDB;  js/backup.js  backup files
       bookmarklet.js    the Goodreads bookmark (the Import page builds it)
       css/              app.css, year.css (screen, print, export), fonts.css
@@ -177,7 +193,7 @@ You need Node 22 or later and Chrome. There are no dependencies to install for t
 
 The app was called Antilibrary until version 0.7. Its storage, backup format, helper and web address still use that name internally, so existing libraries and installs keep working.
 
-The typeface is Source Serif 4, under the SIL Open Font License (`app/fonts/OFL.txt`).
+The code is under the MIT License (`LICENSE`). The typeface is Source Serif 4, under the SIL Open Font License (`app/fonts/OFL.txt`).
 
 ## Privacy
 
