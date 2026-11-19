@@ -572,6 +572,8 @@ function nav(active) {
 
 function notices() {
   const out = [];
+  const inst = installLine();
+  if (inst) out.push(inst);
   if (S.notice) out.push(html`<p class="notice">${S.notice} <button class="link" data-act="dismiss">Dismiss</button></p>`);
   if (S.auto.handle && S.auto.state === "prompt") {
     out.push(html`<p class="notice">Your backup file needs permission again. <button class="link" data-act="auto-reconnect">Reconnect it</button></p>`);
@@ -598,6 +600,18 @@ function lastActivity(bookId) {
 function progressRule(page, pages) {
   const pct = pages ? Math.min(100, (page / pages) * 100) : 0;
   return html`<div class="rule" role="img" aria-label="${pages ? Math.round(pct) + "% read" : "page count unknown"}"><i style="width:${pct.toFixed(1)}%"></i></div>`;
+}
+
+// --- Installing as an app ------------------------------------------------------------------
+// Chrome (and Edge, Android) say when the page can be installed; we offer it as a quiet line.
+let installEvent = null;
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvent = e; if (S.ready) render(); });
+window.addEventListener("appinstalled", () => { installEvent = null; S.notice = "Installed. Tsundoku Tracker now opens as its own app (on a Mac, from Launchpad)."; if (S.ready) render(); });
+
+function installLine() {
+  if (!installEvent || isInstalled() || S.installDismissed) return "";
+  return html`<p class="notice install">Install Tsundoku Tracker as an app: its own window, in Launchpad and the Dock, working offline.
+    <button data-act="install">Install</button> <button class="link" data-act="install-later">Not now</button></p>`;
 }
 
 // --- Getting started (new libraries) and How it works ------------------------------------
@@ -1580,6 +1594,15 @@ async function act(name, d) {
   switch (name) {
     case "dismiss": S.notice = null; return render();
     case "year-print": window.print(); return;
+    case "install": {
+      if (!installEvent) return;
+      const e = installEvent; installEvent = null;
+      await e.prompt();
+      const choice = await e.userChoice.catch(() => null);
+      if (choice && choice.outcome === "dismissed") S.installDismissed = true;
+      return render();
+    }
+    case "install-later": S.installDismissed = true; return render();
     case "sync-start": return goToGoogle(false);
     case "sync-tap": return tokenGood() ? syncNow() : goToGoogle(true);
     case "sync-now": return tokenGood() ? syncNow() : goToGoogle(true);
@@ -2000,7 +2023,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.3.0";
+export const APP_VERSION = "1.3.1";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
