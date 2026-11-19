@@ -16,7 +16,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 MODEL = "claude-haiku-5-5"
-PROMPT_VERSION = 3
+PROMPT_VERSION = 5
 # Claude Haiku 5.5, prompts under 100K tokens: $0.10 in / $0.50 out per million.
 PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6
 # Calibrated guesses until real usage replaces them (see estimate()).
@@ -46,10 +46,7 @@ content: normally the mean of the four components. You may move it by up to 1 po
 
 words: your best estimate of the total words in the text most English-language readers meet (the usual translation for translated books). Give the basis in one short phrase.
 
-youth (0–100): reading-youth, the point in a reading life at which this book is BEST read, for a British adult building a lifelong reading order. 0 = best at 15–16; 20 = about 18–20; 35 = mid-twenties; 50 = about 30; 65 = about 40; 80 = 50s; 100 = only after decades of living and reading. Ask what is lost by reading it too late (books that feed on youthful hunger, restlessness, rebellion, first discovery of ideas or a culture) and too early (books that need work, love, loss, parenthood, ageing, political disappointment, historical context, or earlier books they answer).
-
-Do NOT use when schools anywhere assign it, how commonly teenagers meet it, or childhood religious, devotional or moral reading: judge what the adult reader gains and when. Youth is NOT difficulty: expect the two to disagree often.
-Anchors: The Hitchhiker's Guide to the Galaxy 5. The Catcher in the Rye 5. On the Road 10. Thus Spoke Zarathustra 20 (hard, but young). Crime and Punishment 25. Stoner 60 (easy, but needs years). Middlemarch 65. Montaigne's Essays 85.
+youth (0–100): when in a reading life, from about seventeen onwards, this book is going to be good to read: when it will hit hardest, when the reader will be ready for it, and where it fits in a reading life that builds as it goes. Early books are ways in that give energy and appetite; later books ask more and pay back what came before. Not difficulty, not worth, not when schools set it. The age of the narrator or subject doesn't decide it either way. In the reader's words: "beat generation stuff hits that young and free, but you can also read about patience and maturity at that age, maybe harder more real stuff like Malcolm X comes later... The Fire Next Time would be earlier because it's so good as an intro." Bands: 0–20 late teens, 20–40 early twenties, 40–60 later twenties, 60–80 thirties, 80–100 forty onwards. In youth_reason, say what the book asks of the reader and what it gives.
 
 If you do not recognise the book with reasonable confidence, set identified to false, give your best estimate from the title, author and year, and set confidence to "low"."""
 

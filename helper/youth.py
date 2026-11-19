@@ -1,7 +1,8 @@
 """Reading-youth, re-scored for the whole library in one pass (prompt v3).
 
   uv run youth.py            # prints the books and the most it can cost
-  uv run youth.py --yes      # spends it, writes youth into the catalogue
+  uv run youth.py --yes      # spends it, writes youth-v<N>-candidate.json for review
+  uv run youth.py --apply <candidate.json>   # writes a reviewed candidate into the catalogue
 
 Youth v3 means "when is this book best read", not "when do people usually meet
 it" (v2 asked that, which floated school set texts and childhood religious
@@ -24,37 +25,33 @@ import anthropic
 from pydantic import BaseModel, Field
 
 MODEL = "claude-opus-5-5"
-PROMPT_VERSION = 3
+PROMPT_VERSION = 5
 PRICE_IN, PRICE_OUT = 4 / 1e6, 20 / 1e6        # Claude Opus 5.5, per token
-MAX_OUT = 32000                                 # also the cost ceiling: see main()
+MAX_OUT = 48000                                 # also the cost ceiling: see main()
 DATA = pathlib.Path.home() / "Library/Application Support/Antilibrary"
 
-SYSTEM = """You order a personal library by reading-youth: for each book, the point in a reading life at which it is BEST read.
+SYSTEM = """You're helping one reader put their whole library in order: the order in which to read these books across a life, from about seventeen onwards.
 
-The reader is a British adult reading for themselves, building a lifelong reading order: books that give most when read young come first, books that need more life and more reading behind them are saved for later.
+The question for each book is when in that life it is going to be good to read: when it will hit hardest, when the reader will be ready for it, and where it fits in a reading life that builds as it goes. Early books are ways in, and they give energy and appetite; later books ask more of the reader and pay back what came before. It is not a ranking of difficulty or of worth, and it is not about when schools set a book. The age of a book's narrator or subject doesn't decide it either way: a quiet book about patience or a long marriage can be good to read young; a book with a teenage narrator can need an adult reader.
 
-youth (0–100), the age at which the book lands hardest and gives most:
-0 = best read at 15–16. 20 = about 18–20. 35 = mid-twenties. 50 = about 30. 65 = about 40. 80 = 50s. 100 = best only after decades of living and reading.
+In the reader's own words: "ordered by what time in your life that book is going to be good to read, like beat generation stuff hits that young and free, but you can also read about patience and maturity at that age, maybe harder more real stuff like Malcolm X comes later... The Fire Next Time would be earlier because it's so good as an intro."
 
-Ask of each book:
-- What is lost by reading it too LATE? Books that feed on youthful hunger, restlessness, rebellion, first discovery of ideas or of a culture, or a sense of the world opening up, lose their charge once the reader is settled or has read what came after them.
-- What is lost by reading it too EARLY? Books that need lived experience (work, money, love and its failure, marriage, parenthood, illness, loss, ageing, political disappointment), historical context, or earlier books they answer, are wasted or misread when young.
-- Ideas books: entry points and manifestos sit earlier; books that argue with a tradition, or that only make sense after the field's basics, sit later.
+Work through the books one at a time, and for each one first write a short note on what it asks of the reader (background, earlier books, emotional weight, life experience it genuinely depends on) and what it gives at different points in a life. Then place it:
+- stage, 1 to 5: 1 = opening out (late teens, first freedom); 2 = finding your feet (early twenties); 3 = taking on weight (later twenties); 4 = deepening (thirties); 5 = the long view (forty onwards).
+- youth, 0 to 100: the same placing at finer grain (stage 1 is 0–20, 2 is 20–40, 3 is 40–60, 4 is 60–80, 5 is 80–100), so books within a stage are ordered too.
+- after: numbers of other books in this list it is clearly best read after, usually none.
+- any_time: true only for reference and picture books not meant to be read through. Every novel, poem, essay or argument gets a place.
 
-Do NOT use:
-- when schools anywhere assign it, or how commonly teenagers meet it;
-- childhood religious, devotional or moral reading (scripture, sermons, allegories once given to children): judge what the adult reader gains and when;
-- fame, prestige or ease. Difficulty is a separate measure: a hard book can be young (Nietzsche's Thus Spoke Zarathustra, about 20), an easy one old (Stoner, about 60).
-
-Anchors: The Hitchhiker's Guide to the Galaxy 5. The Catcher in the Rye 5. On the Road 10. Thus Spoke Zarathustra 20. Crime and Punishment 25. Stoner 60. Middlemarch 65. Montaigne's Essays 85.
-
-Use the whole range and compare the books with each other: if two books share a score you should be able to say why they are truly level. Score every book in the list exactly once, by its number. Each reason is one short clause (under 20 words) about the book, never about curricula or reputation."""
+Think about the list as a whole: compare books with each other, and make sure each stage holds the books that truly belong there. Cover every book exactly once, by its number."""
 
 
 class Placing(BaseModel):
     n: int = Field(description="The book's number in the list")
-    youth: int = Field(description="0 to 100")
-    reason: str
+    note: str = Field(description="What it asks of the reader and what it gives, in one or two short clauses")
+    stage: int = Field(description="1 to 5")
+    youth: int = Field(description="0 to 100, inside the stage's band")
+    after: list[int]
+    any_time: bool
 
 
 class Ordering(BaseModel):
@@ -79,7 +76,29 @@ def helper(cmd):
     subprocess.run([str(pathlib.Path.home() / ".local/bin/antilibrary-helper"), cmd], check=False, capture_output=True)
 
 
+def apply(path):
+    """Write a reviewed candidate file's youth placings into the catalogue."""
+    cand = json.loads(pathlib.Path(path).read_text())
+    helper("stop")
+    time.sleep(1)
+    cat = json.loads((DATA / "catalogue.json").read_text())
+    n = 0
+    for key, c in cand["books"].items():
+        sc = cat["entries"].get(key, {}).get("score")
+        if not sc:
+            continue
+        sc.setdefault("youth_v2", {"youth": sc.get("youth"), "reason": sc.get("youth_reason")})
+        sc.update(youth=c["youth"], youth_reason=c["reason"], youth_stage=c.get("stage"), youth_any_time=c.get("any_time", False),
+                  youth_after=c.get("after", []), youth_model=cand["model"], youth_prompt_version=cand["prompt_version"], youth_scored_at=cand["at"])
+        n += 1
+    (DATA / "catalogue.json").write_text(json.dumps(cat, ensure_ascii=False, indent=1))
+    helper("start")
+    print(f"Applied youth v{cand['prompt_version']} to {n} books.")
+
+
 def main():
+    if "--apply" in sys.argv:
+        return apply(sys.argv[sys.argv.index("--apply") + 1])
     cat, books = load()
     client = anthropic.Anthropic()
     msg = "Books:\n" + listing(books)
@@ -91,7 +110,7 @@ def main():
         return
     with client.messages.stream(
         model=MODEL, max_tokens=MAX_OUT, system=SYSTEM,
-        output_config={"effort": "medium"},
+        output_config={"effort": "high"},
         messages=[{"role": "user", "content": msg}],
         output_format=Ordering,
     ) as stream:
@@ -106,26 +125,17 @@ def main():
     missing = [i for i in range(1, len(books) + 1) if i not in got]
     if len(missing) > len(books) // 20:
         sys.exit(f"{len(missing)} books missing from the answer; nothing written.")
-    helper("stop")
-    time.sleep(1)
-    cat = json.loads((DATA / "catalogue.json").read_text())
-    when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    rows = []
-    for i, b in enumerate(books, 1):
-        p = got.get(i)
-        if not p:
-            continue
-        sc = cat["entries"]["gr:" + b["goodreadsBookId"]]["score"]
-        rows.append((sc.get("youth"), p.youth, b["title"]))
-        sc.setdefault("youth_v2", {"youth": sc.get("youth"), "reason": sc.get("youth_reason")})
-        sc.update(youth=p.youth, youth_reason=p.reason, youth_model=MODEL, youth_prompt_version=PROMPT_VERSION, youth_scored_at=when)
-    (DATA / "catalogue.json").write_text(json.dumps(cat, ensure_ascii=False, indent=1))
-    helper("start")
+    cand = {"model": MODEL, "prompt_version": PROMPT_VERSION, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "books": {"gr:" + books[i - 1]["goodreadsBookId"]: {"youth": p.youth, "stage": p.stage, "any_time": p.any_time, "reason": p.note,
+                      "after": ["gr:" + books[j - 1]["goodreadsBookId"] for j in p.after if 1 <= j <= len(books) and j != i]}
+                      for i, p in got.items()}}
+    (DATA / f"youth-v{PROMPT_VERSION}-candidate.json").write_text(json.dumps(cand, ensure_ascii=False, indent=1))
+    rows = list(got)
     extra = DATA / "usage-extra.json"          # other models' spending, priced at the time
     log = json.loads(extra.read_text()) if extra.exists() else []
     log.append({"in": u.input_tokens, "out": u.output_tokens, "at": time.time(), "job": "youth-v3", "model": MODEL, "usd": round(spent, 4)})
     extra.write_text(json.dumps(log, indent=1))
-    print(f"Wrote youth for {len(rows)} books" + (f"; {len(missing)} missing kept their old score" if missing else "") + ".")
+    print(f"Candidate written for {len(rows)} books (catalogue untouched)" + (f"; {len(missing)} missing kept their old score" if missing else "") + ".")
 
 
 if __name__ == "__main__":
