@@ -37,3 +37,14 @@ A small background service that reads your Goodreads shelves through Chrome's ex
     antilibrary-helper status | restart | logs
 
 Needs [uv](https://docs.astral.sh/uv/), Chrome signed in to Goodreads, and (for scores) `export ANTHROPIC_API_KEY=…` in `~/.zshrc`. Data lives in `~/Library/Application Support/Antilibrary`. Other users' own app addresses can be allowed with `ANTILIBRARY_ORIGINS`.
+
+### Reading-youth
+
+Besides difficulty, each book gets a reading-youth figure: when in a reading life it is going to be good to read. It is scored for the whole library in one comparative pass, so the books are judged against each other (`helper/youth.py`, Claude Opus 5.5, about $0.25 for 180 books). The pass writes a candidate file for review; nothing changes until you apply it:
+
+    cd helper
+    uv run youth.py                  # shows the most it can cost
+    uv run youth.py --yes            # writes youth-v5-candidate.json in the data folder
+    uv run youth.py --apply "$HOME/Library/Application Support/Antilibrary/youth-v5-candidate.json"
+
+In the app, The List › Compare with the reading-youth order shows the two orders side by side before anything moves, along with suggested reading orders (one book answering another). Your own youth figure on a book's page always wins.

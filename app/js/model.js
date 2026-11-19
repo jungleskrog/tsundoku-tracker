@@ -126,7 +126,9 @@ export function forecast({ books, byBook, settings, now, earnedToday = 0, earned
   let shares = givenShares ? new Map(givenShares) : learnedShares(active.filter(id => !pins.has(id)), earned, now, { firstUse });
   for (const id of active) result.set(id, { start: null, share: shares.get(id) ?? 0, todayTokens: 0, pinned: pins.has(id) });
 
-  const finished = id => doneIds.has(id);
+  // a prerequisite is met once read; one that's set aside or gone from the library doesn't block
+  const live = new Set(books.filter(b => b.status !== "abandoned").map(b => b.id));
+  const finished = id => doneIds.has(id) || !live.has(id);
   const eligible = id => prereqs.get(id).every(finished);
   const startNext = day => {
     while (active.length < concurrency) {

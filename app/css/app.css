@@ -168,3 +168,46 @@ details.why dl.colophon { margin-top: 12px; }
 details.why dd { font-size: .92rem; }
 .entry:has(.thumb) .rule { margin-right: 62px; }
 h3.small { font-weight: 400; font-size: .85rem; color: var(--quiet); margin: 22px 0 6px; }
+
+/* The waiting list: bands, Move to…, dragging (Stage 5) */
+.orderlinks { margin: -4px 0 6px; }
+.band { margin-top: 18px; }
+h2.bandhead { font-weight: 400; font-size: 1.05rem; margin: 0 0 2px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--ink); padding-bottom: 3px; }
+h2.bandhead .quiet { font-size: .8rem; }
+ol.shelf li.row { grid-template-columns: 2.4em 1fr auto; outline: none; border-radius: 1px; }
+ol.shelf li.row:focus-visible, ol.shelf li.row:focus { background: var(--accent-soft); }
+li.row .body a { color: var(--ink); text-decoration: none; }
+li.row .after { display: block; font-size: .8rem; color: var(--accent); }
+li.row .right { display: flex; gap: 10px; align-items: baseline; justify-content: flex-end; white-space: nowrap; }
+li.row .right .link { font-size: .85rem; }
+li.row .grip { cursor: grab; color: var(--quiet); user-select: none; touch-action: none; padding: 0 2px 0 4px; font-size: 1rem; }
+li.row.dragging { opacity: .35; }
+li.row[draggable="true"] { cursor: default; }
+li.dropline { height: 0; border-top: 2px solid var(--accent); margin: -1px 0; padding: 0 !important; display: block !important; }
+li.menurow { display: block !important; border-bottom: 1px dotted var(--rule); padding: 4px 0 12px 2.4em !important; }
+.movemenu { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.movemenu.pick { display: grid; gap: 6px; max-width: 30rem; }
+.movemenu.pick label { color: var(--quiet); font-size: .9rem; }
+.movemenu.pick ol { list-style: none; margin: 0; padding: 0; max-height: 16rem; overflow: auto; border: 1px solid var(--rule); background: var(--panel); }
+.movemenu.pick ol li { display: block; border: 0; padding: 0; }
+.movemenu.pick ol button { border: 0; width: 100%; justify-content: flex-start; text-align: left; min-height: 32px; display: block; }
+.movemenu.pick .link { justify-self: start; }
+li.empty { display: block !important; }
+kbd { font: inherit; font-size: .78rem; border: 1px solid var(--rule); border-radius: 2px; padding: 0 4px; font-variant-numeric: lining-nums; }
+.keys { margin-top: 18px; }
+@media (hover: none) { .keys { display: none; } }
+/* The youth preview */
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.cmp ol.shelf li { grid-template-columns: 2em 1fr auto; font-size: .9rem; padding: 4px 0; }
+.cmp .mv { font-size: .78rem; color: var(--quiet); white-space: nowrap; font-variant-numeric: lining-nums; }
+.cmp .mv.big { color: var(--accent); font-weight: 600; }
+ol.moves { padding-left: 1.2em; } ol.moves li { margin: 6px 0; } ol.moves .quiet { display: block; }
+ul.sugg { list-style: none; padding: 0; margin: 0 0 12px; }
+ul.sugg li { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px dotted var(--rule); }
+@media (max-width: 560px) {
+  .cmp { grid-template-columns: 1fr; }
+  ol.shelf li.row { grid-template-columns: 2em 1fr; }
+  li.row .right { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
+  li.row .grip { font-size: 1.3rem; padding: 4px 8px; margin-left: auto; }
+  li.menurow { padding-left: 0 !important; }
+}

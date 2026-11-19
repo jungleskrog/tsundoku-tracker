@@ -180,6 +180,96 @@ try {
     await go(`${BASE}/#/`); await until("!!document.querySelector('.entry')"); await sleep(800);
     await shot("9-desk-helper");
     await go(`${BASE}/#/settings`); await until("document.body.innerText.includes('Difficulty scores')"); await shot("10-settings-helper");
+    await go(`${BASE}/#/order`); await until("document.body.innerText.includes('Suggested reading orders')");
+    const sug = await evaluate("document.querySelectorAll('[data-act=sugg-yes]').length");
+    check((await text()).includes("By reading-youth") && sug > 0, `the youth preview works on the real library (${sug} suggested reading orders)`);
+    await shot("15-youth-preview-real");
+  }
+
+  // Stage 5: ordering the waiting list
+  if (!HELPER) {
+    const ids = () => evaluate("[...document.querySelectorAll('li.row')].map(r => r.dataset.id)");
+    const S5 = "window.__antilibrary";
+    await evaluate(`${S5}.query = ''`);
+    await go(`${BASE}/#/list`); await until("!!document.querySelector('li.row')");
+    check((await text()).includes("Next") && (await text()).includes("The stacks"), "the waiting list shows its bands");
+    let o = await ids();
+    check(o.length >= 3, `waiting books: ${o.length}`);
+    // Move to… → To the top
+    await click(`li.row[data-id="${o.at(-1)}"] [data-act=menu]`);
+    await until("!!document.querySelector('.movemenu')");
+    await click(".movemenu [data-go=top]"); await sleep(300);
+    check((await ids())[0] === o.at(-1), "Move to… › To the top");
+    // keyboard: Alt+Down moves one place
+    o = await ids();
+    await evaluate(`(() => { const li = document.getElementById('row-${o[0]}'); li.focus(); li.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true })); })()`); await sleep(300);
+    check((await ids())[1] === o[0], "Alt+Down moves a book one place");
+    check(await evaluate(`document.activeElement && document.activeElement.id === 'row-${o[0]}'`), "the moved book keeps the focus");
+    // band size
+    while (await evaluate(`(${S5}.settings.bands || { next: 5 }).next > 1`)) { await click('[data-act=band][data-k=next][data-d="-1"]'); await sleep(150); }
+    check(await evaluate("document.querySelectorAll('section[data-band=next] li.row').length") === 1, "Next can hold fewer books");
+    // read after: the first book reads after the second, so it drops below it
+    o = await ids();
+    await click(`li.row[data-id="${o[0]}"] [data-act=menu]`); await until("!!document.querySelector('.movemenu')");
+    await click('.movemenu [data-mode=req]'); await until("!!document.getElementById('pick-q')");
+    await click(`.movemenu [data-other="${o[1]}"]`); await sleep(300);
+    let n = await ids();
+    check(n.indexOf(o[0]) === n.indexOf(o[1]) + 1, "‘read after’ moves the book to just after the other");
+    check((await text()).includes("after"), "the row says what it reads after");
+    // a loop is refused
+    await click(`li.row[data-id="${o[1]}"] [data-act=menu]`); await until("!!document.querySelector('.movemenu')");
+    await click('.movemenu [data-mode=req]'); await until("!!document.getElementById('pick-q')");
+    await click(`.movemenu [data-other="${o[0]}"]`); await sleep(300);
+    check((await text()).includes("round in a circle"), "a reading-order loop is refused");
+    // can't go above the book it reads after
+    await click(`li.row[data-id="${o[0]}"] [data-act=menu]`); await until("!!document.querySelector('.movemenu')");
+    await click(".movemenu [data-go=top]"); await sleep(300);
+    n = await ids();
+    check(n.indexOf(o[0]) === n.indexOf(o[1]) + 1 && (await text()).includes("Placed just after"), "a book stops just after the one it reads after");
+    // youth: give the waiting books scores in reverse order, plus a suggestion
+    await evaluate(`(() => { const w = [...${S5}.books.values()].filter(b => b.status === 'want'); const keyOf = b => 'gr:' + b.refs.goodreadsBookId;
+      w.forEach((b, i) => { b.score = { ...(b.score || {}), youth: 90 - i * 10, youth_reason: 'test note ' + i, youth_after: [] }; });
+      const x = w.find(b => !(b.prereqs || []).length && !w.some(o => (o.prereqs || []).includes(b.id))), y = w.find(b => (b.prereqs || []).length === 0 && b !== x); if (x && y) x.score.youth_after = [keyOf(y)]; ${S5}.version++; })()`);
+    await go(`${BASE}/#/order`); await until("document.body.innerText.includes('reading-youth order')");
+    await shot("12-youth-preview");
+    check((await text()).includes("By reading-youth"), "the youth preview compares the two orders");
+    const before = await evaluate(`[...${S5}.books.values()].filter(b => b.status === 'want').map(b => [b.id, b.queueKey])`);
+    await click("[data-act=youth-accept]"); await until("location.hash === '#/list'"); await until("!!document.querySelector('li.row')");
+    const ys = await evaluate(`[...document.querySelectorAll('li.row')].map(r => ${S5}.books.get(r.dataset.id))`);
+    const youths = await evaluate(`[...document.querySelectorAll('li.row')].map(r => { const b = ${S5}.books.get(r.dataset.id); return [b.id, b.score.youth, b.prereqs || []]; })`);
+    const pos = new Map(youths.map(([id], i) => [id, i]));
+    check(youths.every(([id, , pre]) => pre.every(x => !pos.has(x) || pos.get(x) < pos.get(id))), "the youth order keeps every book after the ones it reads after");
+    const free = youths.filter(([, , pre]) => !pre.length).map(([, y]) => y);
+    check(free.every((y, i) => i === 0 || y >= free[i - 1]), "the youth order runs from young to late");
+    check((await text()).includes("Put back the order before"), "the previous order can be put back");
+    await click("[data-act=undo-order]"); await sleep(300);
+    const back = await evaluate(`[...${S5}.books.values()].filter(b => b.status === 'want').map(b => [b.id, b.queueKey])`);
+    check(JSON.stringify(back.sort()) === JSON.stringify(before.sort()), "putting back restores the exact order");
+    // suggestions
+    await go(`${BASE}/#/order`); await until("document.body.innerText.includes('Suggested reading orders')");
+    const hasSugg = await evaluate("!!document.querySelector('[data-act=sugg-yes]')");
+    if (hasSugg) {
+      const [sid, sother] = await evaluate("(() => { const b = document.querySelector('[data-act=sugg-yes]'); return [b.dataset.id, b.dataset.other]; })()");
+      await click("[data-act=sugg-yes]"); await sleep(300);
+      check(await evaluate(`(${S5}.books.get('${sid}').prereqs || []).includes('${sother}')`), "accepting a suggestion sets the reading order");
+    } else check(false, "a suggestion is offered");
+    // your own youth figure
+    await go(`${BASE}/#/book/${o[1]}`); await until("!!document.querySelector('.record')");
+    check((await text()).includes("Reading-youth"), "a book shows its reading-youth");
+    await evaluate("document.querySelector('details.edit').open = true");
+    await evaluate("(() => { const f = document.querySelector('form[data-form=details]'); f.youth.value = '99'; f.requestSubmit(); })()"); await sleep(300);
+    check((await evaluate(`${S5}.books.get('${o[1]}').mine.youth`)) === 99 && (await text()).includes("(your figure)"), "your youth figure overrides the AI's");
+    // survives a reload
+    await go(`${BASE}/#/list`); await until("!!document.querySelector('li.row')");
+    const keep = await ids();
+    await send("Page.reload"); await sleep(600); await until("!!document.querySelector('li.row')");
+    check(JSON.stringify(await ids()) === JSON.stringify(keep), "the order survives a reload");
+    await shot("13-list-bands");
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(300);
+    await click(`li.row [data-act=menu]`); await sleep(200);
+    check(!(await evaluate("document.documentElement.scrollWidth > window.innerWidth + 1")), "the banded list fits a phone, menu open");
+    await shot("14-list-phone");
+    await send("Emulation.clearDeviceMetricsOverride");
   }
 
   // phone width
