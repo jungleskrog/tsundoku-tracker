@@ -59,6 +59,8 @@ Everything lives in your browser (IndexedDB) on that device.
 - **Sync between devices (Google Drive).** In *Settings › Sync between devices*, connect Google Drive on each device: phone, Mac, anywhere.
   - The library is one file in Drive's private app space. It doesn't appear among your files, and only this app can read it.
   - Each device brings in the others' changes when the app opens, after every change, and every few minutes. Every entry is merged, so nothing is lost if two devices change at once.
+  - Changes go up within a second. Switching away from the app or closing it sends anything still waiting straight away. A change that couldn't go up (offline, say) waits on the device and goes up the next time the app opens.
+  - To see the file, open Google Drive's *Settings › Manage apps › Tsundoku Tracker*. It shows the hidden data's size and lets you delete it, but not open it. For a file of your own, use *Save a copy now*.
   - Google's permission for an app without a server lasts about an hour. When you open the app after that, it renews the permission by itself: a quick trip to Google and back, with nothing to tap if you're still signed in to Google. If the permission runs out while the app is open, the Desk shows *Tap to sync*.
 - **Backup file (Chrome).** In *Settings › Keeping your library safe*, choose a file in Dropbox or iCloud Drive. Every change is then saved to it. Open the same file on another device to carry the library across: *Load from a copy… › Merge it in* keeps everything from both.
 - **Other browsers.** Use *Save a copy now* from time to time.

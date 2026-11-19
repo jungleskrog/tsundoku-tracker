@@ -106,7 +106,7 @@ async function commit({ books: putBooks = [], events: putEvents = [], removeEven
   });
   await store.setMeta("lastChangeAt", t);
   scheduleAutoBackup();
-  scheduleSync();
+  if (S.sync.rec?.on) { S.sync.dirty = true; scheduleSync(); }
   render();
 }
 
@@ -175,10 +175,21 @@ const clientId = () => GOOGLE_CLIENT_ID || S.settings?.googleClientId || "";
 const appBase = () => location.origin + location.pathname.replace(/[^/]*$/, "");
 let syncTimer = null;
 
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.sync.rec?.on && tokenGood()) scheduleSync(300); });
+// Leaving the app (switching away, locking the phone, closing it): send what's waiting at once,
+// in the few seconds the system allows, rather than after the usual short pause.
+function flushSync() {
+  if (!S.sync.rec?.on || !S.sync.dirty || !tokenGood()) return;
+  clearTimeout(syncTimer);
+  guard(syncNow());
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") return flushSync();
+  if (S.sync.rec?.on && tokenGood()) scheduleSync(300);
+});
+window.addEventListener("pagehide", flushSync);
 setInterval(() => { if (document.visibilityState === "visible" && S.sync.rec?.on && tokenGood()) scheduleSync(0); }, 3 * 60e3);
 
-function scheduleSync(ms = 2000) {
+function scheduleSync(ms = 800) {
   if (!S.sync.rec?.on) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => guard(syncNow()), ms);
@@ -207,6 +218,7 @@ async function syncNow() {
     S.sync.rec = { ...S.sync.rec, rev: r.rev, fileId: drive.fileId };
     await store.setMeta("gdrive", S.sync.rec);
     S.sync.last = now(); S.sync.state = "on"; S.sync.error = null;
+    if (!S.sync.again) S.sync.dirty = false;
     await store.setMeta("gdriveLast", S.sync.last);
   } catch (e) {
     S.sync.state = e instanceof SY.SignedOut ? "tap" : navigator.onLine === false ? "offline" : "error";
@@ -2036,7 +2048,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.3.3";
+export const APP_VERSION = "1.3.4";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
