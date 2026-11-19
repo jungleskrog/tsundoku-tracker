@@ -137,6 +137,7 @@ Nothing changes until you apply the candidate file.
 - **Colophon:** each finished or set-aside book carries one on its page, giving the edition, dates, sittings, hours and the longest sitting.
 - **Marginalia:** *Note in the margin* keeps a one-line note at the page you've reached.
 - **Commonplace book:** your own lines and margin notes, gathered by year.
+- **Connections:** on any book's page, *Connect to another book…* links it to another, with a kind (*answers*, *builds on*, *influenced by*, *same movement*, *reads well with*, *contrasts with*) and an optional note or source. *The Library › Connections* draws them as a map, each group of linked books together, with colour showing the kind of link. *Show suggestions* adds the read-after pairs, from your reading order and from the reading-youth pass, as dotted lines you can connect or ignore. The app never makes links up on its own.
 
 ## The printed year
 
@@ -190,6 +191,7 @@ You need Node 22 or later and Chrome. There are no dependencies to install for t
       js/order.js       the list: bands, moves, read-after, reading-youth
       js/goodreads.js   the round trip: what to change on Goodreads, the bookmark's data
       js/calib.js       pace calibration from timed sessions
+      js/links.js       connections: links, suggestions, the map's layout
       js/library.js     colophons, the wall label, shelf letters, the commonplace book
       js/year.js        the printed year
       js/sync.js        sync: merge with the cloud copy, write back only if needed, retry on a clash

@@ -558,6 +558,41 @@ try {
     check(await evaluate("!!document.querySelector('li.row [data-act=menu]')"), "back in your order, books can be moved again");
   }
 
+  // 1.6: connections
+  if (!HELPER) {
+    const A = "window.__antilibrary";
+    const ids = await evaluate(`[...${A}.books.values()].slice(0, 3).map(b => b.id)`);
+    await go(`${BASE}/#/book/${ids[0]}`); await until("!!document.querySelector('[data-act=link-open]')");
+    await click("[data-act=link-open]"); await until("!!document.getElementById('link-q')");
+    await evaluate("(() => { const s = document.getElementById('link-kind'); s.value = 'answers'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
+    const otherTitle = await evaluate(`${A}.books.get('${ids[1]}').synced?.title || ${A}.books.get('${ids[1]}').mine?.title`);
+    await evaluate(`(() => { const n = document.getElementById('link-note'); n.value = 'a test note'; n.dispatchEvent(new Event('input', { bubbles: true })); const q = document.getElementById('link-q'); q.value = ${JSON.stringify(otherTitle.slice(0, 8))}; q.dispatchEvent(new Event('input', { bubbles: true })); })()`); await sleep(200);
+    await click(`[data-act=link-pick][data-other="${ids[1]}"]`); await sleep(300);
+    const link = await evaluate(`${A}.events.filter(e => e.type === 'link').pop()`);
+    check(link && link.bookId === ids[0] && link.other === ids[1] && link.kind === "answers" && link.note === "a test note", "a book connects to another, with the kind and a note");
+    check((await text()).includes("Answers"), "the book page lists the connection");
+    await go(`${BASE}/#/book/${ids[1]}`); await until("!!document.querySelector('.record')");
+    check((await text()).includes("Is answered by"), "and the other book shows it from its side");
+    await go(`${BASE}/#/map`); await until("!!document.querySelector('figure.map svg')");
+    check(await evaluate("document.querySelectorAll('.map .node').length") === 2 && await evaluate("document.querySelectorAll('.map .edge.k-answers').length") === 1, "the map draws the two books and their link");
+    await shot("23-map");
+    await go(`${BASE}/#/book/${ids[0]}`); await until("!!document.querySelector('[data-act=link-del]')");
+    await click("[data-act=link-del]"); await sleep(300);
+    check(!(await evaluate(`${A}.events.some(e => e.type === 'link' && e.id === '${link.id}')`)), "a connection can be removed");
+  }
+
+  // 1.6 on the real library: the map with suggestions
+  if (HELPER) {
+    await go(`${BASE}/#/map`); await until("!!document.querySelector('[data-change=map-suggest]')");
+    await evaluate("(() => { const c = document.querySelector('[data-change=map-suggest]'); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); })()"); await sleep(500);
+    const n = await evaluate("document.querySelectorAll('.map .edge.sugg').length");
+    check(n > 0, `the map shows the read-after suggestions (${n})`);
+    await shot("23-map-real");
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(300);
+    check(!(await evaluate("document.documentElement.scrollWidth > window.innerWidth + 1")), "the map fits a phone");
+    await send("Emulation.clearDeviceMetricsOverride");
+  }
+
   // phone width
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await go(`${BASE}/`); await until("window.__antilibrary && window.__antilibrary.ready");

@@ -19,6 +19,7 @@ import { eventId } from "./ids.js";
 import * as SY from "./sync.js";
 import * as GD from "./gdrive.js";
 import * as CB from "./calib.js";
+import * as LK from "./links.js";
 import { GOOGLE_CLIENT_ID } from "./config.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
@@ -31,6 +32,7 @@ const S = {
   bmHref: null, bmInbox: [], paste: false,
   noteFor: null, letterSeen: null, openRow: null, edPanel: null,
   timer: null, stopping: null, prevModel: null, listSort: "custom",
+  linkPanel: null, mapSuggest: false,
   sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false },
 };
 
@@ -1318,12 +1320,90 @@ function viewLibrary() {
       <p class="quiet small">Written each week from what you logged: no AI, nothing sent anywhere.</p>
       ${ls.slice(0, 2).map(letterBlock)}
       ${ls.length > 2 ? html`<details class="older"><summary>Earlier letters (${ls.length - 2})</summary>${ls.slice(2).map(letterBlock)}</details>` : ""}</section>
+    <section><h2 class="sc small">Connections</h2>
+      <p>${(() => { const n = allLinks().length; return n ? html`${plural(n, "connection")} between your books. <a href="#/map">The map</a>` : html`Link books that answer, build on or read well with each other, from any book's page, and they gather on <a href="#/map">the map</a>.`; })()}</p></section>
     <section><h2 class="sc small">Commonplace book</h2>
       ${years.length ? years.map(([y, items]) => html`<h3 class="sc small">${y}</h3><ul class="commonplace">${items.map(it => html`<li>
         <blockquote>${it.text}</blockquote><p class="small">— <a href="#/book/${it.id}"><i>${it.title}</i></a>${it.author ? `, ${it.author}` : ""}${it.kind === "note" ? `${it.page ? `, p. ${it.page}` : ""} · ${shortDate(it.at)}` : ""}</p></li>`)}</ul>`)
         : html`<p class="quiet">Your own lines (a book's annotation, once you've written it yourself) and your notes in the margin gather here, by year.</p>`}</section>
     <section><h2 class="sc small">Colophons</h2>
       <p>${finished ? html`Each finished or set-aside book carries its colophon on its page. ${raw(books().filter(b => b.status === "read" || b.status === "abandoned").sort((a, b) => ((L.colophon(b, evs(b.id), derived().p).finished || "") > (L.colophon(a, evs(a.id), derived().p).finished || "") ? 1 : -1)).slice(0, 8).map(b => `<a href="#/book/${esc(b.id)}"><i>${esc(effective(b).title)}</i></a>`).join(" · "))}` : "Finish a book and its colophon appears on its page."}</p></section>`;
+}
+
+// --- Connections -------------------------------------------------------------------------------
+
+const allLinks = () => LK.linksOf(S.events, new Set(S.books.keys()));
+
+function connectionsBlock(b) {
+  const mine = LK.linksFor(allLinks(), b.id);
+  const sugg = LK.suggestedLinks(books(), allLinks(), H.keyOf).filter(x => x.from === b.id || x.to === b.id);
+  const P = S.linkPanel && S.linkPanel.id === b.id ? S.linkPanel : null;
+  return html`<h2 class="sc small">Connections</h2>
+    ${mine.length ? html`<ul class="sugg links">${mine.map(x => html`<li><span class="kind k-${x.link.kind}"></span>${x.phrase.replace(/^./, c => c.toUpperCase())} <a href="#/book/${x.other}">${ital(x.other)}</a>${x.link.note ? html` <span class="quiet small">${x.link.note}</span>` : ""}
+      <button class="link small" data-act="link-del" data-ev="${x.link.id}">Remove</button></li>`)}</ul>` : ""}
+    ${sugg.map(x => { const other = x.from === b.id ? x.to : x.from; return html`<p class="notice quiet small">Suggested${x.source === "ai" ? " by the reading-youth pass" : " from your reading order"}: ${x.from === b.id ? html`this builds on ${ital(other)}` : html`${ital(other)} builds on this`}.
+      <button class="link" data-act="link-accept" data-from="${x.from}" data-to="${x.to}">Connect</button> · <button class="link" data-act="link-ignore" data-from="${x.from}" data-to="${x.to}">Ignore</button></p>`; })}
+    ${P ? linkPanel(b, P) : html`<p><button class="link" data-act="link-open" data-id="${b.id}">Connect to another book…</button>${allLinks().length ? html` · <a href="#/map">The map</a>` : ""}</p>`}`;
+}
+
+function linkPanel(b, P) {
+  const q = (P.q || "").trim().toLowerCase();
+  const hits = q ? books().filter(x => x.id !== b.id && `${effective(x).title} ${effective(x).author}`.toLowerCase().includes(q)).slice(0, 20) : [];
+  return html`<div class="movemenu pick linkpanel">
+    <p class="linkrow"><span><i>${shortTitle(effective(b).title)}</i></span>
+      <select id="link-kind" data-change="link-kind">${LK.KIND_ORDER.map(k => html`<option value="${k}" ${k === P.kind ? raw("selected") : ""}>${LK.KINDS[k].out}</option>`)}</select></p>
+    <label class="vh" for="link-q">Find the other book</label>
+    <input id="link-q" type="search" value="${P.q || ""}" placeholder="Find the other book" autocomplete="off">
+    <label class="vh" for="link-note">A note or source (optional)</label>
+    <input id="link-note" value="${P.note || ""}" placeholder="A note or source (optional), e.g. Baldwin's essay on Malcolm X" maxlength="200" autocomplete="off">
+    ${hits.length ? html`<ol>${hits.map(x => html`<li><button data-act="link-pick" data-id="${b.id}" data-other="${x.id}"><i>${effective(x).title}</i> <span class="quiet">${effective(x).author} · ${STATUS_LABEL[x.status].toLowerCase()}</span></button></li>`)}</ol>` : q ? html`<p class="quiet small">No book matches.</p>` : ""}
+    <button class="link" data-act="link-close">Cancel</button>
+  </div>`;
+}
+
+async function addLink(from, to, kind, note = "") {
+  const t = now();
+  S.notice = `Connected: ${effective(S.books.get(from)).title} ${LK.KINDS[kind].out} ${effective(S.books.get(to)).title}.`;
+  return commit({ events: [{ id: eventId(), bookId: from, other: to, type: "link", kind, note: note.trim(), at: t, source: "app" }] });
+}
+
+const KIND_COLOUR = k => `var(--k-${k})`;
+
+function viewMap() {
+  const links = allLinks();
+  const sugg = S.mapSuggest ? LK.suggestedLinks(books(), links, H.keyOf) : [];
+  const ids = [...new Set([...links, ...sugg].flatMap(l => [l.from, l.to]))];
+  const W = 800;
+  const packed = LK.packedLayout(ids, [...links, ...sugg], { width: W });
+  const pos = packed.pos, Hh = Math.max(120, Math.round(packed.height + 24));
+  const P = id => pos.get(id);
+  const edge = (l, dashed) => {
+    const a = P(l.from), b = P(l.to), dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const x2 = b.x - (dx / d) * 9, y2 = b.y - (dy / d) * 9;
+    return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="${dashed ? "edge sugg" : `edge k-${l.kind}`}"${!dashed && LK.KINDS[l.kind].directed ? ` marker-end="url(#m-${l.kind})"` : ""}><title>${esc(effective(S.books.get(l.from)).title)} ${esc(LK.KINDS[l.kind].out)} ${esc(effective(S.books.get(l.to)).title)}${l.note ? " — " + esc(l.note) : ""}</title></line>`;
+  };
+  const node = id => {
+    const b = S.books.get(id), p = P(id), right = p.x < W - 150;
+    const cls = b.status === "read" ? "read" : b.status === "reading" ? "reading" : "waiting";
+    return `<a href="#/book/${esc(id)}" class="node ${cls}"><circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5.5"/><text x="${(p.x + (right ? 9 : -9)).toFixed(1)}" y="${(p.y + 4).toFixed(1)}" text-anchor="${right ? "start" : "end"}">${esc(shortTitle(effective(b).title))}</text></a>`;
+  };
+  const markers = LK.KIND_ORDER.filter(k => LK.KINDS[k].directed).map(k => `<marker id="m-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="k-${k}"/></marker>`).join("");
+  const nSugg = LK.suggestedLinks(books(), links, H.keyOf).length;
+  return html`
+    <div class="dateline sc"><span>${plural(links.length, "connection")}</span><a href="#/library">The Library</a></div>
+    <h1>Connections</h1>
+    <p class="quiet">How your books relate, only as you've said. Link books from any book's page; ${raw('<i>builds on</i>, <i>answers</i> and <i>influenced by</i>')} point from the later book to the earlier.</p>
+    <p class="small"><label><input type="checkbox" data-change="map-suggest" ${S.mapSuggest ? raw("checked") : ""}> Show suggestions</label> <span class="quiet">(${plural(nSugg, "read-after pair")}, dotted; connect or ignore them on each book's page or below)</span></p>
+    ${ids.length ? html`<figure class="map"><svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="${`A map of ${ids.length} books and their connections`}"><defs>${raw(markers)}</defs>
+        ${raw(sugg.map(l => edge(l, true)).join("") + links.map(l => edge(l, false)).join("") + ids.map(node).join(""))}</svg>
+      <figcaption class="legend small">${LK.KIND_ORDER.map(k => html`<span><span class="kind k-${k}"></span>${LK.KINDS[k].label}</span>`)}
+        <span><span class="dot reading"></span>in hand</span><span><span class="dot read"></span>read</span><span><span class="dot waiting"></span>waiting</span></figcaption></figure>`
+      : html`<p class="notice quiet">No connections yet. Open any book and choose <i>Connect to another book…</i>${nSugg ? html`, or tick <i>Show suggestions</i> to see the ${nSugg} read-after pairs` : ""}.</p>`}
+    ${S.mapSuggest && sugg.length ? html`<h2 class="sc small">Suggestions <span class="quiet">${sugg.length}</span></h2><ul class="suggest-list">${sugg.slice(0, 80).map(x => html`<li>
+        <span class="pair"><a href="#/book/${x.from}"><i>${shortTitle(titleOf(x.from))}</i></a> <span class="quiet">builds on</span> <a href="#/book/${x.to}"><i>${shortTitle(titleOf(x.to))}</i></a>${x.source === "yours" ? html` <span class="quiet small">(your reading order)</span>` : ""}</span>
+        <span class="acts"><button class="link" data-act="link-accept" data-from="${x.from}" data-to="${x.to}">Connect</button> · <button class="link" data-act="link-ignore" data-from="${x.from}" data-to="${x.to}">Ignore</button></span></li>`)}</ul>
+      <p class="quiet small">Unmarked ones come from the reading-youth pass.</p>` : ""}
+    <p class="quiet small">Links are yours: the app never makes them up. Suggestions come only from read-after orders, yours or the reading-youth pass's, and only become links when you connect them.</p>`;
 }
 
 const STATUS_LABEL = { want: "Waiting", reading: "In hand", paused: "Paused", read: "Read", abandoned: "Set aside" };
@@ -1337,6 +1417,7 @@ function describe(e) {
     if (e.to === "reading") return e.from === "paused" ? "Resumed" : e.from === "read" ? "Begun again" : "Begun";
     return { want: "Returned to the list", paused: "Paused", read: "Finished", abandoned: "Set aside" }[e.to];
   }
+  if (e.type === "link") return html`Connected: ${LK.KINDS[e.kind]?.out || e.kind} ${S.books.has(e.other) ? ital(e.other) : "a book no longer here"}${e.note ? ` (${e.note})` : ""}`;
   if (e.type === "session") return `Timed: ${L.duration(e.minutes)}, p. ${e.fromPage} → ${e.toPage}${e.capped ? " (timer left running)" : ""}`;
   if (e.type === "note") return `“${e.text}”${e.page ? ` (p. ${e.page})` : ""}`;
   return e.type;
@@ -1390,6 +1471,7 @@ function viewBook(id) {
       ${b.status === "reading" ? shareBlock(b) : ""}
       ${S.listNote && S.menu === null && route()[0] === "book" ? html`<p class="notice">${S.listNote} <button class="link" data-act="note-ok">OK</button></p>` : ""}
       ${afterBlock(b)}
+      ${connectionsBlock(b)}
       <h2 class="sc small">Annotation</h2>
       <form class="annot" data-form="annotation" data-id="${id}">
         <label class="vh" for="annot">One line: a quote or a note</label>
@@ -1673,10 +1755,10 @@ function render() {
   if (S.error) { root.innerHTML = html`<main class="page"><h1>Tsundoku Tracker couldn't open</h1><p>${S.error}</p></main>`; return; }
   if (!S.ready) return;
   const [name, arg] = route();
-  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary, year: () => viewYear(arg), about: viewAbout }[name] || viewDesk;
-  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library", year: "library", about: "settings" }[name] || "desk";
+  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary, year: () => viewYear(arg), about: viewAbout, map: viewMap }[name] || viewDesk;
+  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library", year: "library", about: "settings", map: "library" }[name] || "desk";
   const focus = document.activeElement?.id;
-  document.documentElement.dataset.view = name in { desk: 1, list: 1, book: 1, order: 1, library: 1, year: 1, settings: 1, goodreads: 1, import: 1, add: 1, about: 1 } ? name : "desk";
+  document.documentElement.dataset.view = name in { desk: 1, list: 1, book: 1, order: 1, library: 1, year: 1, settings: 1, goodreads: 1, import: 1, add: 1, about: 1, map: 1 } ? name : "desk";
   root.innerHTML = html`${nav(active)}<main class="page">${notices()}${view()}</main>`;
   if (S.focusRow && document.getElementById(`row-${S.focusRow}`)) {
     const el = document.getElementById(`row-${S.focusRow}`);
@@ -1757,6 +1839,12 @@ async function act(name, d) {
       return commit({ settings: { ...S.settings, model: m, updatedAt: t } });
     }
     case "sort-custom": S.listSort = "custom"; await store.setMeta("listSort", "custom"); return render();
+    case "link-open": S.linkPanel = { id: d.id, q: "", kind: "together", note: "" }; render(); document.getElementById("link-q")?.focus(); return;
+    case "link-close": S.linkPanel = null; return render();
+    case "link-pick": { const P = S.linkPanel; S.linkPanel = null; return addLink(d.id, d.other, P?.kind || "together", P?.note || ""); }
+    case "link-del": S.notice = "Connection removed."; return commit({ removeEvents: [d.ev] });
+    case "link-accept": return addLink(d.from, d.to, "builds");
+    case "link-ignore": { const a = S.books.get(d.from); return commit({ books: [patchBook(a, { linksDeclined: [...new Set([...(a.linksDeclined || []), d.to])] }, t)] }); }
     case "row-more": S.openRow = S.openRow === d.id ? null : d.id; return render();
     case "gs-installed": return commit({ settings: gsDone("installed") || S.settings });
     case "gs-show": return commit({ settings: { ...S.settings, gettingStarted: { ...(S.settings.gettingStarted || {}), show: true, dismissed: false }, updatedAt: t } });
@@ -2052,6 +2140,8 @@ async function change(el) {
   if (kind === "ask") { S.plan.asks[+el.dataset.i].choice = el.value; return; }
   if (kind === "autoscore") return; // saved with its form
   if (kind === "year") { location.hash = `#/year/${el.value}`; return; }
+  if (kind === "link-kind" && S.linkPanel) { S.linkPanel.kind = el.value; return; }
+  if (kind === "map-suggest") { S.mapSuggest = el.checked; return render(); }
   if (kind === "show-timer") return commit({ settings: { ...S.settings, showTimer: el.checked, updatedAt: now() } });
   if (kind === "list-sort") { S.listSort = el.value; await store.setMeta("listSort", S.listSort); return render(); }
   const file = el.files?.[0];
@@ -2095,6 +2185,8 @@ document.addEventListener("submit", e => {
 document.addEventListener("input", e => {
   if (e.target.id === "q") { S.query = e.target.value; render(); }
   if (e.target.id === "pick-q" && S.menu) { S.menu.q = e.target.value; render(); }
+  if (e.target.id === "link-q" && S.linkPanel) { S.linkPanel.q = e.target.value; render(); }
+  if (e.target.id === "link-note" && S.linkPanel) S.linkPanel.note = e.target.value;
 });
 
 // Keys on the waiting list (a row has focus)
@@ -2174,7 +2266,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.5.0";
+export const APP_VERSION = "1.6.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
