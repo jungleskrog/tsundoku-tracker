@@ -16,8 +16,9 @@ import * as G from "./goodreads.js";
 import * as L from "./library.js";
 import * as Y from "./year.js";
 import { eventId } from "./ids.js";
-import * as DB from "./dropbox.js";
-import { DROPBOX_APP_KEY } from "./config.js";
+import * as SY from "./sync.js";
+import * as GD from "./gdrive.js";
+import { GOOGLE_CLIENT_ID } from "./config.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
 const S = {
@@ -28,7 +29,7 @@ const S = {
   menu: null, listNote: null, undoOrder: null, focusRow: null,
   bmHref: null, bmInbox: [], paste: false,
   noteFor: null, letterSeen: null, openRow: null, edPanel: null,
-  sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false, pasting: false },
+  sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false },
 };
 
 const now = () => new Date().toISOString();
@@ -152,42 +153,50 @@ async function syncWithAutoFile() {
   await writeAutoNow();
 }
 
-// --- Sync through Dropbox ----------------------------------------------------------------
+// --- Sync through Google Drive -----------------------------------------------------------
+// rec (kept in IndexedDB): { on: true, access, expiresAt, fileId, rev }. The access token lasts
+// about an hour; renewing it is a quick round trip to Google's sign-in page (no screens if
+// you're still signed in), done by itself when the app opens, or with one tap mid-session.
 
-const appKey = () => DROPBOX_APP_KEY || S.settings?.dropboxAppKey || "";
+const clientId = () => GOOGLE_CLIENT_ID || S.settings?.googleClientId || "";
 const appBase = () => location.origin + location.pathname.replace(/[^/]*$/, "");
-const iosHomeScreen = () => navigator.standalone === true;
 let syncTimer = null;
 
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.sync.rec?.on && tokenGood()) scheduleSync(300); });
+setInterval(() => { if (document.visibilityState === "visible" && S.sync.rec?.on && tokenGood()) scheduleSync(0); }, 3 * 60e3);
+
 function scheduleSync(ms = 2000) {
-  if (!S.sync.rec) return;
+  if (!S.sync.rec?.on) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => guard(syncNow()), ms);
 }
 
-/** One round with Dropbox: bring in the other devices' changes, send ours. */
+const tokenGood = () => !!(S.sync.rec?.access && S.sync.rec.expiresAt > Date.now());
+
+/** One round with Drive: bring in the other devices' changes, send ours. */
 async function syncNow() {
-  if (!S.sync.rec) return;
+  if (!S.sync.rec?.on) return;
+  if (!tokenGood()) { S.sync.state = "tap"; return render(); }
   if (S.sync.busy) { S.sync.again = true; return; }
   S.sync.busy = true; S.sync.state = "syncing";
   try {
-    let rec = await DB.freshToken(S.sync.rec);
-    const r = await DB.syncOnce({
-      access: rec.access, local: archive, merge: mergeArchives,
+    const drive = GD.driveStore(S.sync.rec.access, { fileId: S.sync.rec.fileId });
+    const r = await SY.syncOnce({
+      store: drive, local: archive, merge: mergeArchives,
       prepare: a => { const problem = validateArchive(a); if (problem) throw new Error(problem); return migrate(a); },
       accept: async m => {
         const merged = mergeArchives(archive(), m); // anything changed here meanwhile is kept
-        if (merged.stats.booksAdded + merged.stats.booksUpdated > 20) await store.snapshot("before bringing in changes from Dropbox", archive());
+        if (merged.stats.booksAdded + merged.stats.booksUpdated > 20) await store.snapshot("before bringing in changes from Google Drive", archive());
         await store.replaceAll(merged);
         load(merged);
       },
     });
-    S.sync.rec = { ...rec, rev: r.rev };
-    await store.setMeta("dropbox", S.sync.rec);
+    S.sync.rec = { ...S.sync.rec, rev: r.rev, fileId: drive.fileId };
+    await store.setMeta("gdrive", S.sync.rec);
     S.sync.last = now(); S.sync.state = "on"; S.sync.error = null;
-    await store.setMeta("dropboxLast", S.sync.last);
+    await store.setMeta("gdriveLast", S.sync.last);
   } catch (e) {
-    S.sync.state = e instanceof DB.SignedOut ? "signedout" : navigator.onLine === false ? "offline" : "error";
+    S.sync.state = e instanceof SY.SignedOut ? "tap" : navigator.onLine === false ? "offline" : "error";
     S.sync.error = e.message;
   } finally {
     S.sync.busy = false;
@@ -196,42 +205,39 @@ async function syncNow() {
   }
 }
 
-async function startDropbox() {
-  if (!appKey()) { S.notice = "Dropbox sync isn't set up for this copy of the app yet (see the README)."; return render(); }
-  const paste = iosHomeScreen() || S.sync.pasting;
-  const { url, pending } = await DB.signInUrl(appKey(), paste ? null : appBase());
-  await store.setMeta("dropboxPending", pending);
-  if (paste) { S.sync.pasting = true; window.open(url, "_blank"); return render(); }
+/** Off to Google's sign-in page and back. silent: no screens (used to renew). */
+async function goToGoogle(silent) {
+  if (!clientId()) { S.notice = "Google Drive sync isn't set up for this copy of the app yet (see the README)."; return render(); }
+  const { url, state } = GD.signInUrl(clientId(), appBase(), { silent });
+  await store.setMeta("gdrivePending", { state, back: location.hash || "#/", silent, at: Date.now() });
   location.href = url;
 }
 
-async function finishDropbox(code) {
-  const pending = await store.getMeta("dropboxPending");
-  if (!pending) throw new Error("Start again: the sign-in had expired.");
-  const rec = await DB.finishSignIn(pending, code);
-  await store.setMeta("dropboxPending", null);
-  S.sync.rec = rec; S.sync.pasting = false;
-  await store.setMeta("dropbox", rec);
-  S.notice = "Signed in to Dropbox. This device now syncs by itself; sign in on your other devices too.";
-  await syncNow();
-}
-
-/** Coming back from Dropbox's sign-in page with ?code=… */
-async function dropboxReturn() {
-  const q = new URLSearchParams(location.search);
-  if (!q.get("code") && !q.get("error")) return;
-  history.replaceState(null, "", appBase() + (location.hash || "#/settings"));
-  if (q.get("error")) { S.notice = "Dropbox sign-in was cancelled."; return; }
-  const pending = await store.getMeta("dropboxPending");
-  if (!pending || pending.state !== q.get("state")) { S.notice = "That Dropbox sign-in didn't match; try again from Settings."; return; }
-  await finishDropbox(q.get("code")).catch(e => { S.notice = `Dropbox: ${e.message}`; });
+/** Coming back from Google with #access_token=… (or an error) in the address. */
+async function googleReturn() {
+  const got = GD.parseReturn(location.hash);
+  if (!got) return false;
+  const pending = await store.getMeta("gdrivePending");
+  await store.setMeta("gdrivePending", null);
+  history.replaceState(null, "", appBase() + (pending?.back || "#/"));
+  if (!pending || pending.state !== got.state) { S.notice = "That Google sign-in didn't match; try again from Settings."; return true; }
+  if (got.error) {
+    if (pending.silent) { S.sync.state = "tap"; await store.setMeta("gdriveSilentFailedAt", Date.now()); }
+    else S.notice = got.error === "access_denied" ? "Google Drive access wasn't given." : `Google said: ${got.error}`;
+    return true;
+  }
+  const first = !S.sync.rec?.on;
+  S.sync.rec = { ...(S.sync.rec || {}), on: true, access: got.access, expiresAt: got.expiresAt };
+  await store.setMeta("gdrive", S.sync.rec);
+  if (first) S.notice = "Connected to Google Drive. This device now syncs; connect your other devices too.";
+  return true;
 }
 
 function syncWords() {
   const sy = S.sync;
-  if (!sy.rec) return null;
+  if (!sy.rec?.on) return null;
   if (sy.state === "syncing") return "Syncing…";
-  if (sy.state === "signedout") return "Dropbox needs you to sign in again";
+  if (sy.state === "tap") return "Tap to sync";
   if (sy.state === "offline") return "Offline; will sync when back";
   if (sy.state === "error") return `Sync paused: ${sy.error}`;
   return sy.last ? `Synced ${relativeDay(sy.last).replace(/^today at /, "at ")}` : "Synced";
@@ -239,16 +245,13 @@ function syncWords() {
 
 function syncBlock() {
   const sy = S.sync;
-  if (!appKey()) return html`<p class="quiet">Dropbox sync isn't set up for this copy of the app. Whoever hosts it registers a Dropbox app once (see the README); then everyone signs in with their own Dropbox.</p>`;
-  if (!sy.rec) return html`
-    <p>Keep this library the same on your phone, your Mac and anywhere else. Sign in to Dropbox on each device: the library is kept as one file in <i>Dropbox › Apps</i>, and every change is merged in, so nothing is lost if two devices change at once.</p>
-    <p><button data-act="sync-start">Sign in to Dropbox</button> ${!sy.pasting ? html`<button class="link" data-act="sync-paste-mode">Use a code instead</button>` : ""}</p>
-    ${sy.pasting ? html`<form data-form="sync-code" class="inline"><label>Code from Dropbox <input name="code" autocomplete="off" required></label> <button>Connect</button></form>
-      <p class="quiet small">Dropbox opens in a new page; sign in, allow it, and paste the code it shows here. (A home-screen app on an iPhone can't be sent back to, so it uses this way.)</p>` : ""}`;
+  if (!clientId()) return html`<p class="quiet">Google Drive sync isn't set up for this copy of the app. Whoever hosts it creates a Google client ID once (see the README); then everyone connects their own Google account.</p>`;
+  if (!sy.rec?.on) return html`
+    <p>Keep this library the same on your phone, your Mac and anywhere else. Connect Google Drive on each device: the library is kept as one file in Drive's private app space (it doesn't appear among your files), and every change is merged in, so nothing is lost if two devices change at once.</p>
+    <p><button data-act="sync-start">Connect Google Drive</button></p>`;
   return html`
-    <p>${syncWords()}. This device syncs by itself when you open the app, after each change, and every few minutes.</p>
-    <p><button data-act="sync-now">Sync now</button> <button class="link" data-act="sync-stop">Stop syncing on this device</button></p>
-    ${sy.state === "signedout" ? html`<p><button data-act="sync-start">Sign in again</button></p>` : ""}`;
+    <p>${syncWords()}. Syncs when you open the app, after each change, and every few minutes. Google's permission lasts about an hour at a time; the app renews it by itself when you open it, or with a tap on <i>Tap to sync</i>.</p>
+    <p><button data-act="sync-now">Sync now</button> <button class="link" data-act="sync-stop">Stop syncing on this device</button></p>`;
 }
 
 // --- The Mac helper ------------------------------------------------------------------
@@ -535,14 +538,19 @@ async function boot() {
       if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
     S.letterSeen = await store.getMeta("letterSeen");
-    S.sync.rec = (await store.getMeta("dropbox")) || null;
-    S.sync.last = (await store.getMeta("dropboxLast")) || null;
-    if (S.sync.rec) S.sync.state = "on";
+    S.sync.rec = (await store.getMeta("gdrive")) || null;
+    S.sync.last = (await store.getMeta("gdriveLast")) || null;
+    if (S.sync.rec?.on) S.sync.state = "on";
     S.ready = true;
     for (const p of S.bmInbox.splice(0)) takeBookmarklet(p);
     loadBookmarklet();
-    await dropboxReturn();
-    if (S.sync.rec) guard(syncNow());
+    await googleReturn();
+    if (S.sync.rec?.on) {
+      // renew by itself on opening (not again within ten minutes of a failed try, to avoid loops)
+      const failedAt = (await store.getMeta("gdriveSilentFailedAt")) || 0;
+      if (!tokenGood() && document.visibilityState === "visible" && Date.now() - failedAt > 600e3 && navigator.onLine !== false) { goToGoogle(true); return; }
+      guard(syncNow());
+    }
     connectHelper();
   } catch (e) {
     S.error = e.message || String(e);
@@ -568,7 +576,7 @@ function notices() {
   if (S.auto.handle && S.auto.state === "prompt") {
     out.push(html`<p class="notice">Your backup file needs permission again. <button class="link" data-act="auto-reconnect">Reconnect it</button></p>`);
   }
-  if (S.ready && S.books.size && !S.auto.handle && !S.sync.rec && route()[0] !== "desk") {
+  if (S.ready && S.books.size && !S.auto.handle && !S.sync.rec?.on && route()[0] !== "desk") {
     const last = S.settings.lastExportAt;
     if (!last || Date.now() - new Date(last) > 30 * 864e5) {
       out.push(html`<p class="notice quiet">Your library lives only in this browser. <a href="#/settings">Keep a backup</a>.</p>`);
@@ -614,8 +622,8 @@ function gettingStarted() {
       body: html`Reading is counted in tokens: one token is about ${S.settings.minutesPerToken} minutes of focused reading, whatever the book. A hard page costs more tokens than an easy one, so dates stay honest.
         <form data-form="tokens" class="inline gs-form"><label>Tokens a day <input name="tokens" type="number" min="1" max="100" value="${S.settings.dailyTokens}" inputmode="numeric"></label> <button>Keep it</button>
         <span class="quiet small">${S.settings.dailyTokens} tokens ≈ ${S.settings.dailyTokens * S.settings.minutesPerToken} minutes</span></form>` },
-    { key: "backup", done: !!(S.auto.handle || S.settings.lastExportAt), title: "Keep a backup",
-      body: html`The library lives in this browser only. In Chrome, choose a file in Dropbox or iCloud Drive and every change is saved to it; elsewhere, save a copy now and then. <a href="#/settings#backup">Set up a backup</a>` },
+    { key: "backup", done: !!(S.sync.rec?.on || S.auto.handle || S.settings.lastExportAt), title: "Sync or back up",
+      body: html`The library lives in this browser. Connect Google Drive to keep it the same on your phone and Mac, or keep a backup file. <a href="#/settings#sync">Set it up</a>` },
     { key: "ordered", done: !!gs.ordered, title: "Put the list in order", need: S.books.size > 0,
       body: html`Next, Soon and The stacks are stretches of one list. Use <i>Move to…</i>, drag a book, or the keys (<kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Alt</kbd>+arrows). A book can be set to read after another. <a href="#/list">The List</a>` },
     { key: "installed", done: !!gs.installed || isInstalled(), title: "Install it",
@@ -651,7 +659,7 @@ function viewAbout() {
       <h2 class="sc small" id="helper">The Mac helper (optional)</h2>
       <p>A small program on your own Mac that reads your Goodreads shelves through Chrome's existing sign-in, fetches covers and each book's most-liked quote, and (with your own Claude API key) scores difficulty and reading-youth. Scoring is shown with its cost first; a whole library of 180 books costs about ten cents. Setting it up takes a few Terminal commands: see the README.</p>
       <h2 class="sc small">Your data</h2>
-      <p>Everything lives in this browser, on this device. Keep a backup file in Dropbox or iCloud Drive (Settings) and open the same file on your phone to carry the library across. Nothing is sent to any server; the helper, if you use it, talks only to Goodreads and, for scoring, to the Claude API.</p>
+      <p>Everything lives in this browser, on this device. Connect Google Drive (Settings) on each device and the library stays the same everywhere: it's one file in Drive's private app space, merged on every change. There's no server of ours; the helper, if you use it, talks only to Goodreads and, for scoring, to the Claude API.</p>
       <h2 class="sc small">The Library</h2>
       <p>A wall label for the pile (how much, how heavy, how long), a short letter each week written from what you logged, a colophon for every finished book, your commonplace book, and the printed year: a year of reading set as a small book to print or keep.</p>
     </section>
@@ -768,7 +776,7 @@ function deskFooter() {
   const letter = letterLine();
   if (letter) bits.push(letter);
   if (grCount()) bits.push(html`<a href="#/goodreads">${plural(grCount(), "change")} for Goodreads</a>`);
-  if (S.sync.rec) bits.push(html`<a href="#/settings#sync" class="${S.sync.state === "error" || S.sync.state === "signedout" ? "warn" : ""}">${syncWords()}</a>`);
+  if (S.sync.rec?.on) bits.push(S.sync.state === "tap" ? html`<button class="link warn" data-act="sync-tap">Tap to sync</button>` : html`<a href="#/settings#sync" class="${S.sync.state === "error" ? "warn" : ""}">${syncWords()}</a>`);
   else if (!S.auto.handle && (!S.settings.lastExportAt || Date.now() - new Date(S.settings.lastExportAt) > 30 * 864e5)) bits.push(html`<a href="#/settings#sync">Only in this browser: sync or back up</a>`);
   return html`<div class="deskfoot">${bits}</div>`;
 }
@@ -1572,13 +1580,13 @@ async function act(name, d) {
   switch (name) {
     case "dismiss": S.notice = null; return render();
     case "year-print": window.print(); return;
-    case "sync-start": return startDropbox();
-    case "sync-paste-mode": S.sync.pasting = true; return render();
-    case "sync-now": return syncNow();
+    case "sync-start": return goToGoogle(false);
+    case "sync-tap": return tokenGood() ? syncNow() : goToGoogle(true);
+    case "sync-now": return tokenGood() ? syncNow() : goToGoogle(true);
     case "sync-stop": {
-      await store.setMeta("dropbox", null);
+      await store.setMeta("gdrive", null);
       S.sync = { ...S.sync, rec: null, state: "off", last: null, error: null };
-      S.notice = "This device no longer syncs. The library stays here, and the copy in Dropbox stays there.";
+      S.notice = "This device no longer syncs. The library stays here, and the copy in Google Drive stays there.";
       return render();
     }
     case "ledger-reset": {
@@ -1795,10 +1803,6 @@ async function submit(form) {
       catch (e) { S.edPanel = { id: b.id, step: "ask" }; S.notice = `Couldn't look it up: ${e.message}`; }
       return render();
     }
-    case "sync-code": {
-      try { await finishDropbox(f.get("code") || ""); } catch (e) { S.notice = `Dropbox: ${e.message}`; }
-      return render();
-    }
     case "reader": {
       const name = (f.get("reader") || "").trim().slice(0, 60);
       S.notice = name ? `The title page now reads “The Reading Year of ${name}”.` : "The title page has no name.";
@@ -1996,7 +2000,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.2.1";
+export const APP_VERSION = "1.3.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

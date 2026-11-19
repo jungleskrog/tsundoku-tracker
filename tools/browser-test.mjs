@@ -458,7 +458,7 @@ try {
   {
     await go(`${BASE}/#/settings`); await until("!!document.getElementById('sync')");
     const sy = await evaluate("document.getElementById('sync').innerText");
-    check(/Sync between devices/.test(sy) && (/isn't set up for this copy/.test(sy) || /Sign in to Dropbox/.test(sy)), "Settings offers sync between devices");
+    check(/Sync between devices/.test(sy) && (/isn.t set up for this copy/.test(sy) || /Connect Google Drive/.test(sy)), "Settings offers sync between devices");
     await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(300);
     await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
     const bar = await evaluate("(() => { const t = document.querySelector('.masthead .tabs'); const r = t.getBoundingClientRect(); return { pos: getComputedStyle(t).position, bottom: Math.round(r.bottom), h: window.innerHeight }; })()");

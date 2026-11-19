@@ -56,11 +56,10 @@ When you open the app the first time, the Desk shows a short *Getting started* l
 
 Everything lives in your browser (IndexedDB) on that device.
 
-- **Sync between devices (Dropbox).** In *Settings › Sync between devices*, sign in to Dropbox on each device: your phone, your Mac, anywhere.
-  - The library is kept as one file in *Dropbox › Apps › Tsundoku Tracker*.
+- **Sync between devices (Google Drive).** In *Settings › Sync between devices*, connect Google Drive on each device: phone, Mac, anywhere.
+  - The library is one file in Drive's private app space. It doesn't appear among your files, and only this app can read it.
   - Each device brings in the others' changes when the app opens, after every change, and every few minutes. Every entry is merged, so nothing is lost if two devices change at once.
-  - On an iPhone home-screen app, sign-in uses a code you paste, because iOS can't send the sign-in back to the app.
-
+  - Google's permission for an app without a server lasts about an hour. When you open the app after that, it renews the permission by itself: a quick trip to Google and back, with nothing to tap if you're still signed in to Google. If the permission runs out while the app is open, the Desk shows *Tap to sync*.
 - **Backup file (Chrome).** In *Settings › Keeping your library safe*, choose a file in Dropbox or iCloud Drive. Every change is then saved to it. Open the same file on another device to carry the library across: *Load from a copy… › Merge it in* keeps everything from both.
 - **Other browsers.** Use *Save a copy now* from time to time.
 - **Earlier copies.** The app keeps its own copies before any big change (an import, a reordering or a restore), and you can restore them from Settings.
@@ -155,14 +154,20 @@ If you use the helper with your own copy, tell the helper about your copy's addr
 
     export ANTILIBRARY_ORIGINS="https://<you>.github.io,http://localhost:8731"
 
-### Dropbox sync for your copy
+### Google Drive sync for your copy
 
-Sync needs a Dropbox app registered once by whoever hosts the copy. Everyone then signs in with their own Dropbox. The app key isn't a secret: sign-in uses PKCE, so there is nothing secret in the code.
+Sync needs a Google OAuth client ID, created once by whoever hosts the copy. Everyone then connects their own Google account. The client ID isn't a secret: the browser token flow has none.
 
-1. At <https://www.dropbox.com/developers/apps>, choose *Create app › Scoped access › App folder* and give it a name.
-2. *Permissions*: tick `files.content.write` and `files.content.read`, then *Submit*.
-3. *Settings › OAuth 2 › Redirect URIs*: add your copy's address (for example `https://<you>.github.io/<repo>/`) and `http://localhost:8731/`. Leave *Allow public clients* on.
-4. Put the *App key* in `app/js/config.js`.
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Google Drive API** (*APIs & Services › Library*).
+2. Set up the consent screen (*Google Auth Platform*, choosing *External*), then:
+   - under *Data access*, add the scope `https://www.googleapis.com/auth/drive.appdata`;
+   - under *Audience*, add yourself (and anyone else) as a test user.
+3. Under *Clients › Create client › Web application*:
+   - add your copy's origin (`https://<you>.github.io`) and `http://localhost:8731` as **Authorized JavaScript origins**;
+   - add your copy's address (`https://<you>.github.io/<repo>/`) and `http://localhost:8731/` as **Authorized redirect URIs**.
+4. Put the *Client ID* in `app/js/config.js`.
+
+While the app is in Google's *Testing* mode, Google shows an "unverified app" notice when someone connects. Choose *Continue*.
 
 ## Development
 
@@ -182,8 +187,9 @@ You need Node 22 or later and Chrome. There are no dependencies to install for t
       js/goodreads.js   the round trip: what to change on Goodreads, the bookmark's data
       js/library.js     colophons, the wall label, shelf letters, the commonplace book
       js/year.js        the printed year
-      js/dropbox.js     sync: Dropbox sign-in (PKCE), the library file, merge and retry
-      js/config.js      this copy's Dropbox app key
+      js/sync.js        sync: merge with the cloud copy, write back only if needed, retry on a clash
+      js/gdrive.js      Google Drive: sign-in (token flow), the file in the app space
+      js/config.js      this copy's Google client ID
       js/store.js       IndexedDB;  js/backup.js  backup files
       bookmarklet.js    the Goodreads bookmark (the Import page builds it)
       css/              app.css, year.css (screen, print, export), fonts.css
