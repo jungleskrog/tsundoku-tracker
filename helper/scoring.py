@@ -16,7 +16,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 MODEL = "claude-haiku-5-5"
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 # Claude Haiku 5.5, prompts under 100K tokens: $0.10 in / $0.50 out per million.
 PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6
 # Calibrated guesses until real usage replaces them (see estimate()).
@@ -46,18 +46,10 @@ content: normally the mean of the four components. You may move it by up to 1 po
 
 words: your best estimate of the total words in the text most English-language readers meet (the usual translation for translated books). Give the basis in one short phrase.
 
-youth (0–100): reading-youth, an interpretive ordering, not a ranking of worth: how early in a serious reader's life this book typically arrives. 0 = often first read at about 14; 100 = usually reached only after decades of reading. Weigh: typical age of first encounter (school set texts, cult teenage and student reads pull earlier); ties to a youth culture or moment (the Beats, punk, early internet culture pull earlier); how much lived experience or historical context it needs to land; whether it answers or depends on earlier books.
+youth (0–100): reading-youth, the point in a reading life at which this book is BEST read, for a British adult building a lifelong reading order. 0 = best at 15–16; 20 = about 18–20; 35 = mid-twenties; 50 = about 30; 65 = about 40; 80 = 50s; 100 = only after decades of living and reading. Ask what is lost by reading it too late (books that feed on youthful hunger, restlessness, rebellion, first discovery of ideas or a culture) and too early (books that need work, love, loss, parenthood, ageing, political disappointment, historical context, or earlier books they answer).
 
-Youth is NOT difficulty. Score it separately and expect the two to disagree often. Anchors where they diverge:
-5 = The Hitchhiker's Guide to the Galaxy (easy, read young).
-10 = On the Road (easy, read young).
-20 = Nietzsche's Thus Spoke Zarathustra (hard, but a classic student read).
-25 = Crime and Punishment (demanding, but commonly read at university).
-55 = Stoner (easy prose, but usually reached later and lands with age).
-65 = Middlemarch (moderate, but typically a later read).
-75 = a quiet late-life memoir or a book about ageing and work (easy, read late).
-85 = Montaigne's Essays (moderate, usually a late companion).
-Popular self-help, accessible activism and political polemic aimed at young adults usually sit early (10–35) whatever their topic.
+Do NOT use when schools anywhere assign it, how commonly teenagers meet it, or childhood religious, devotional or moral reading: judge what the adult reader gains and when. Youth is NOT difficulty: expect the two to disagree often.
+Anchors: The Hitchhiker's Guide to the Galaxy 5. The Catcher in the Rye 5. On the Road 10. Thus Spoke Zarathustra 20 (hard, but young). Crime and Punishment 25. Stoner 60 (easy, but needs years). Middlemarch 65. Montaigne's Essays 85.
 
 If you do not recognise the book with reasonable confidence, set identified to false, give your best estimate from the title, author and year, and set confidence to "low"."""
 
