@@ -26,7 +26,7 @@ export function open(name = DB_NAME) {
     };
     r.onsuccess = () => resolve(r.result);
     r.onerror = () => reject(r.error);
-    r.onblocked = () => reject(new Error("Antilibrary is open in another window that is using an older version. Close it and reload."));
+    r.onblocked = () => reject(new Error("Tsundoku Tracker is open in another window that is using an older version. Close it and reload."));
   });
   return dbPromise;
 }

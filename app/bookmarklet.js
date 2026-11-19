@@ -1,7 +1,7 @@
-// Antilibrary — the "Antilibrary: read my shelves" bookmarklet.
+// Tsundoku Tracker — the "Tsundoku Tracker: read my shelves" bookmarklet.
 // Runs on goodreads.com in your own signed-in tab: reads Want to Read, Currently
 // Reading and Read with ordinary same-site page requests, a second apart, then hands
-// the list to your Antilibrary tab (or copies it, to paste on the Import page).
+// the list to your Tsundoku Tracker tab (or copies it, to paste on the Import page).
 // It stores nothing and sends nothing anywhere but your own app.
 // The app fills in __APP__ (its own address) when it makes the bookmark.
 // Lines starting with // are dropped from the bookmark.
@@ -23,7 +23,7 @@
     }
   };
   document.body.append(box);
-  say("Antilibrary: reading your shelves…");
+  say("Tsundoku Tracker: reading your shelves…");
   const me = (document.querySelector('a[href*="/review/list/"]')?.getAttribute("href") || "").match(/\/review\/list\/(\d+)/)?.[1]
     || (document.querySelector('a[href*="/user/show/"]')?.getAttribute("href") || "").match(/\/user\/show\/(\d+)/)?.[1];
   if (!me) { say("Sign in to Goodreads first, then click the bookmark again.", [["Close", () => box.remove()]]); return; }
@@ -38,7 +38,7 @@
   try {
     for (const shelf of SHELVES) {
       for (let page = 1; page < 50; page++) {
-        say(`Antilibrary: reading ${shelf.replace(/-/g, " ")}… (${books.length} books so far)`);
+        say(`Tsundoku Tracker: reading ${shelf.replace(/-/g, " ")}… (${books.length} books so far)`);
         const res = await fetch(`/review/list/${me}?shelf=${shelf}&per_page=100&page=${page}&sort=date_added&order=a`, { credentials: "same-origin" });
         if (!res.ok) throw new Error(`Goodreads answered ${res.status}`);
         const doc = new DOMParser().parseFromString(await res.text(), "text/html");
@@ -69,7 +69,7 @@
       }
     }
   } catch (e) {
-    say(`Antilibrary couldn't read the shelves: ${e.message}`, [["Close", () => box.remove()]]);
+    say(`Tsundoku Tracker couldn't read the shelves: ${e.message}`, [["Close", () => box.remove()]]);
     return;
   }
   const payload = { format: "antilibrary-goodreads-sync", version: 1, user_id: me, synced_at: new Date().toISOString(), books };
@@ -78,22 +78,22 @@
   const onMsg = e => {
     if (e.origin !== APP_ORIGIN || !e.data || e.data.type !== "antilibrary-received") return;
     clearInterval(timer); window.removeEventListener("message", onMsg);
-    say(`Sent to Antilibrary: ${count}. Look there to see what changes before anything does.`, [["Close", () => box.remove()]]);
+    say(`Sent to Tsundoku Tracker: ${count}. Look there to see what changes before anything does.`, [["Close", () => box.remove()]]);
   };
   const send = () => {
     window.addEventListener("message", onMsg);
     win = window.open(APP + "#/import", "antilibrary");
-    if (!win) { say("The browser blocked the new tab. Copy instead, and paste on Antilibrary's Import page.", [["Copy", copy], ["Close", () => box.remove()]]); return; }
+    if (!win) { say("The browser blocked the new tab. Copy instead, and paste on Tsundoku Tracker's Import page.", [["Copy", copy], ["Close", () => box.remove()]]); return; }
     say("Sending…");
     clearInterval(timer); tries = 0;
     timer = setInterval(() => {
-      if (++tries > 40) { clearInterval(timer); say("Antilibrary didn't answer. Copy instead, and paste on its Import page.", [["Copy", copy], ["Close", () => box.remove()]]); return; }
+      if (++tries > 40) { clearInterval(timer); say("Tsundoku Tracker didn't answer. Copy instead, and paste on its Import page.", [["Copy", copy], ["Close", () => box.remove()]]); return; }
       try { win.postMessage(payload, APP_ORIGIN); } catch (_) {}
     }, 500);
   };
   const copy = async () => {
-    try { await navigator.clipboard.writeText(JSON.stringify(payload)); say(`Copied: ${count}. Paste it on Antilibrary's Import page.`, [["Close", () => box.remove()]]); }
-    catch (_) { say("The browser wouldn't copy. Try Send instead.", [["Send to Antilibrary", send], ["Close", () => box.remove()]]); }
+    try { await navigator.clipboard.writeText(JSON.stringify(payload)); say(`Copied: ${count}. Paste it on Tsundoku Tracker's Import page.`, [["Close", () => box.remove()]]); }
+    catch (_) { say("The browser wouldn't copy. Try Send instead.", [["Send to Tsundoku Tracker", send], ["Close", () => box.remove()]]); }
   };
-  say(`Read ${count}.`, [["Send to Antilibrary", send], ["Copy", copy], ["Close", () => box.remove()]]);
+  say(`Read ${count}.`, [["Send to Tsundoku Tracker", send], ["Copy", copy], ["Close", () => box.remove()]]);
 })();

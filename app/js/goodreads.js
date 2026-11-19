@@ -45,7 +45,7 @@ const isDone = (b, item) => b.flags?.grDone && b.flags.grDone.status === b.statu
 /** The bookmarklet's payload -> the incoming shape planImport expects. */
 export function fromBookmarklet(payload) {
   if (!payload || payload.format !== "antilibrary-goodreads-sync" || !Array.isArray(payload.books)) {
-    throw new Error("That isn't what the Antilibrary bookmarklet copies.");
+    throw new Error("That isn't what the Tsundoku Tracker bookmarklet copies.");
   }
   return payload.books.filter(b => b && b.book_id && b.shelf).map(b => {
     const inc = {

@@ -133,7 +133,7 @@ test("archives: merge unions events, newer book wins, deletions stick", () => {
   assert.ok(!m.events.some(e => e.id === gone.id));
   assert.equal(m.stats.eventsAdded, 1);
   assert.equal(validateArchive(a), null);
-  assert.match(validateArchive({ format: "x" }), /isn't an Antilibrary/);
+  assert.match(validateArchive({ format: "x" }), /isn't a Tsundoku Tracker/);
 });
 
 test("migrations run in order and refuse gaps", () => {

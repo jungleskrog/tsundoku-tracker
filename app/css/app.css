@@ -1,4 +1,4 @@
-/* Antilibrary — a personal catalogue, typeset like a well-made book.
+/* Tsundoku Tracker — a personal catalogue, typeset like a well-made book.
    Source Serif 4, warm paper, near-black ink, one oxblood accent. */
 :root {
   --paper: #F4EFE6; --ink: #1E1B18; --quiet: #6B645B; --rule: #D6CDBE; --panel: #FBF8F2;
@@ -222,3 +222,43 @@ ul.sugg li { display: flex; justify-content: space-between; gap: 12px; align-ite
 .grlist .btns { display: flex; gap: .8rem; align-items: center; margin-top: .35rem; flex-wrap: wrap; }
 a.bm { cursor: grab; }
 textarea { width: 100%; font: inherit; font-size: .9rem; padding: .5rem; border: 1px solid var(--rule); background: var(--paper, transparent); color: inherit; box-sizing: border-box; }
+
+/* Stage 7: the library */
+.wall-label { margin: 1rem 0 2rem; padding: 1.2rem 1.4rem; background: var(--panel); border: 1px solid var(--rule); max-width: 34rem; }
+.wall-label > .sc { font-size: 1.05rem; letter-spacing: .08em; margin: 0; }
+.wall-label .maker { margin: .1rem 0 .8rem; color: var(--quiet); }
+.tomb { display: grid; grid-template-columns: 6.5rem 1fr; gap: .25rem .8rem; margin: 0 0 1rem; }
+.tomb dt { font-variant: small-caps; letter-spacing: .04em; color: var(--quiet); }
+.tomb dd { margin: 0; }
+.hist { display: flex; align-items: flex-end; gap: 3px; height: 4.5rem; margin: .4rem 0 .9rem; }
+.hist span { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; text-align: center; }
+.hist i { display: block; background: var(--accent); opacity: .75; min-height: 1px; }
+.hist b { font-weight: normal; font-size: .7rem; color: var(--quiet); margin-top: 2px; }
+.stretches { width: 100%; border-collapse: collapse; font-size: .9rem; font-variant-numeric: tabular-nums; margin: .4rem 0 .6rem; }
+.stretches th, .stretches td { text-align: right; padding: .2rem .4rem; border-bottom: 1px solid var(--rule); }
+.stretches th:first-child, .stretches thead th { font-weight: normal; }
+.stretches tbody th { text-align: left; font-variant: small-caps; letter-spacing: .04em; }
+.stretches thead th { color: var(--quiet); font-size: .8rem; }
+.letter { margin: 1rem 0 1.6rem; max-width: 34rem; }
+.letter p { margin: .45rem 0; }
+.letter .dateline { margin-bottom: .4rem; }
+details.older > summary { cursor: pointer; color: var(--accent); margin: .5rem 0; }
+.commonplace { list-style: none; padding: 0; margin: 0 0 1.5rem; }
+.commonplace li { margin: 0 0 1.1rem; }
+.commonplace blockquote { margin: 0; font-style: italic; }
+.commonplace p { margin: .2rem 0 0 1.2rem; color: var(--quiet); }
+.colophon-page { margin: 2rem auto; max-width: 28rem; text-align: center; padding: 1.4rem 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.colophon-page .t { font-size: 1.15rem; margin: .4rem 0 0; }
+.colophon-page .a { margin: 0 0 .8rem; }
+.colophon-page p { margin: .35rem 0; line-height: 1.5; }
+form.note { display: flex; gap: .5rem; align-items: center; margin: .4rem 0; flex-wrap: wrap; }
+form.note input { flex: 1 1 14rem; font: inherit; font-style: italic; padding: .3rem .4rem; border: 1px solid var(--rule); background: transparent; color: inherit; }
+.history li.note span:last-child { font-style: italic; color: var(--accent); }
+@media (min-width: 1100px) {
+  .history li.note span:last-child { border-left: 2px solid var(--accent); padding-left: .6rem; }
+}
+@media (max-width: 520px) {
+  .tomb { grid-template-columns: 1fr; }
+  .tomb dt { margin-top: .3rem; }
+  .wall-label { padding: 1rem; }
+}

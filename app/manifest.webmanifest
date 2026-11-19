@@ -1,7 +1,7 @@
 {
-  "name": "Antilibrary",
-  "short_name": "Antilibrary",
-  "description": "A personal reading catalogue.",
+  "name": "Tsundoku Tracker",
+  "short_name": "Tsundoku",
+  "description": "A personal reading catalogue: the books you mean to read, in order.",
   "id": "./",
   "start_url": "./",
   "scope": "./",

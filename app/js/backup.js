@@ -34,7 +34,7 @@ export async function autoHandle() {
 export async function connectAuto() {
   const handle = await window.showSaveFilePicker({
     suggestedName: "antilibrary-backup.json",
-    types: [{ description: "Antilibrary backup", accept: { "application/json": [".json"] } }],
+    types: [{ description: "Tsundoku Tracker backup", accept: { "application/json": [".json"] } }],
   });
   await setMeta("autoBackupHandle", handle);
   return handle;

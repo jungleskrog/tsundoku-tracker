@@ -1,4 +1,4 @@
-// Antilibrary domain rules. Pure functions: no storage, no DOM.
+// Tsundoku Tracker domain rules. Pure functions: no storage, no DOM.
 // Records follow the approved schema (architecture note §5):
 //   book.synced  — written only by import/sync
 //   book.mine    — written only by the user; any key present wins
@@ -311,9 +311,9 @@ export function makeArchive({ books, events, tombstones, settings }, now) {
 }
 
 export function validateArchive(a) {
-  if (!a || a.format !== "antilibrary-archive") return "This isn't an Antilibrary backup file.";
+  if (!a || a.format !== "antilibrary-archive") return "This isn't a Tsundoku Tracker backup file.";
   if (typeof a.schemaVersion !== "number") return "The backup has no version number.";
-  if (a.schemaVersion > SCHEMA_VERSION) return "This backup was made by a newer version of Antilibrary. Update the app first.";
+  if (a.schemaVersion > SCHEMA_VERSION) return "This backup was made by a newer version of Tsundoku Tracker. Update the app first.";
   for (const k of ["books", "events"]) if (!Array.isArray(a[k])) return `The backup is missing its ${k}.`;
   return null;
 }

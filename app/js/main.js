@@ -1,4 +1,4 @@
-// Antilibrary — application shell, state and views.
+// Tsundoku Tracker — application shell, state and views.
 import * as store from "./store.js";
 import * as backup from "./backup.js";
 import {
@@ -13,6 +13,8 @@ import { csvObjects, goodreadsRows, isGoodreadsExport } from "./csv.js";
 import { keysBetween, compareKeys } from "./keys.js";
 import * as O from "./order.js";
 import * as G from "./goodreads.js";
+import * as L from "./library.js";
+import { eventId } from "./ids.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
 const S = {
@@ -22,6 +24,7 @@ const S = {
   helper: { connected: false, status: null, estimate: null, asks: [] },
   menu: null, listNote: null, undoOrder: null, focusRow: null,
   bmHref: null, bmInbox: [], paste: false,
+  noteFor: null, letterSeen: null,
 };
 
 const now = () => new Date().toISOString();
@@ -407,6 +410,7 @@ async function boot() {
       S.auto.state = await backup.autoPermission(S.auto.handle).catch(() => "error");
       if (S.auto.state === "granted") await syncWithAutoFile().catch(e => { S.notice = `Couldn't read the backup file: ${e.message}`; });
     }
+    S.letterSeen = await store.getMeta("letterSeen");
     S.ready = true;
     for (const p of S.bmInbox.splice(0)) takeBookmarklet(p);
     loadBookmarklet();
@@ -424,8 +428,8 @@ const route = () => (location.hash.replace(/^#\/?/, "").split("#")[0] || "desk")
 function nav(active) {
   const item = (href, label, key) => html`<a href="#/${href}" class="${active === key ? "on" : ""}">${label}</a>`;
   return html`<nav class="masthead">
-    <a class="brand" href="#/">Antilibrary</a>
-    <span class="tabs">${[item("", "The Desk", "desk"), item("list", "The List", "list"), item("settings", "Settings", "settings")]}</span>
+    <a class="brand" href="#/">Tsundoku Tracker</a>
+    <span class="tabs">${[item("", "The Desk", "desk"), item("list", "The List", "list"), item("library", "The Library", "library"), item("settings", "Settings", "settings")]}</span>
   </nav>`;
 }
 
@@ -486,8 +490,10 @@ function deskEntry(b) {
       </span>
     </div>
     ${fin && !done ? html`<p class="when">${fin.plain ? fin.phrase : `At your current pace, finishes ${fin.phrase}.`}</p>` : ""}
+    ${S.noteFor === b.id ? noteForm(b, page) : ""}
     <div class="fin">
       ${done ? raw(`<button class="link strong" data-act="status" data-id="${esc(b.id)}" data-to="read">Mark as finished</button> · `) : ""}
+      ${S.noteFor !== b.id ? raw(`<button class="link" data-act="note-open" data-id="${esc(b.id)}">Note in the margin</button>${undo ? " · " : ""}`) : ""}
       ${undo ? raw(`<button class="link" data-act="undo" data-id="${esc(b.id)}">Undo p. ${undo.prevPage} → ${undo.page}</button> <span class="quiet">(${esc(relativeDay(undo.at))})</span>`) : ""}
     </div>
   </article>`;
@@ -511,13 +517,14 @@ function viewDesk() {
   return html`
     <div class="dateline sc"><span>${longDate(new Date())}</span><span>The Desk</span></div>
     ${empty ? html`<section class="welcome">
-      <h1>An empty antilibrary</h1>
+      <h1>Nothing piled up yet</h1>
       <p>Bring in your Goodreads library (My Books › Import and export › Export library, then choose the file here), or add a book by hand.</p>
       <p><a class="button" href="#/import">Import from Goodreads</a> <a class="button quietbtn" href="#/add">Add a book</a></p>
     </section>` : html`
     <h1>In hand</h1>
     ${reading.length ? reading.map(deskEntry) : html`<p class="quiet">Nothing in hand. Begin something from the list below.</p>`}
     ${ledgerBlock(reading)}
+    ${letterLine()}
     <h2 class="sc small">Next on the shelf</h2>
     <ol class="shelf">${next.map((b, i) => { const e = effective(b); return html`<li>
       <span class="n">${i + 1}</span><a href="#/book/${b.id}"><i>${e.title}</i> <span class="quiet">${e.author}</span>
@@ -803,6 +810,115 @@ function viewGoodreads() {
     ${S.helper.connected ? html`<p><button data-act="helper-sync">Read Goodreads now</button> <span class="quiet small">to confirm what you've changed.</span></p>` : ""}`;
 }
 
+// --- The Library: wall label, shelf letters, commonplace book, colophons, marginalia ------------
+
+const italH = t => `<i>${t}</i>`;
+
+function noteForm(b, page) {
+  return html`<form class="note" data-form="note" data-id="${b.id}">
+    <label class="vh" for="note-${b.id}">A note in the margin</label>
+    <input id="note-${b.id}" name="text" maxlength="300" placeholder="A note in the margin${page ? `, at p. ${page}` : ""}" autocomplete="off">
+    <button>Keep</button> <button type="button" class="link" data-act="note-close">Cancel</button></form>`;
+}
+
+function colophonBlock(b) {
+  const c = L.colophon(b, evs(b.id), derived().p);
+  const lines = L.colophonText(c, { ital: italH, esc });
+  return html`<section class="colophon-page" aria-label="Colophon"><p class="sc small">Colophon</p>
+    <p class="t"><i>${c.title}</i></p><p class="a sc">${c.author}</p>
+    ${lines.map(l => html`<p>${raw(l)}</p>`)}</section>`;
+}
+
+function wallLabelBlock() {
+  const list = waiting();
+  if (!list.length) return html`<p class="quiet">Nothing waiting.</p>`;
+  const d = derived(), w = L.wallLabel(list, O.bandsOf(S.settings), d.p), a = w.all;
+  const last = list.map(b => d.fc.get(b.id)).filter(Boolean);
+  const beyond = last.some(f => f.beyond), far = Math.max(0, ...last.map(f => f.finish ?? 0));
+  const horizon = beyond ? "more than twenty years at your present pace"
+    : far ? `at your present pace, the list as it stands runs to ${L.monthPhrase(new Date(Date.now() + far * 864e5), new Date())}` : "no forecast yet";
+  const peak = Math.max(1, ...a.hist);
+  const row = (name, m) => html`<tr><th scope="row">${name}</th><td>${m.count}</td><td>${m.pages.toLocaleString("en-GB")}</td><td>${Math.round(m.tokens).toLocaleString("en-GB")}</td><td>${m.mean == null ? "—" : (Math.round(m.mean * 10) / 10).toFixed(1)}</td></tr>`;
+  return html`<figure class="wall-label">
+    <p class="sc">The waiting list</p>
+    <p class="maker">${plural(a.count, "volume")} · ${longDate(new Date())}</p>
+    <dl class="tomb">
+      <dt>Extent</dt><dd>${a.pages.toLocaleString("en-GB")} pages${a.unknown ? ` (and ${a.unknown} without a page count)` : ""}; about ${Math.round(a.tokens).toLocaleString("en-GB")} tokens, some ${Math.round(a.hours).toLocaleString("en-GB")} hours of reading</dd>
+      <dt>Weight</dt><dd>median difficulty ${(Math.round(a.median * 10) / 10).toFixed(1)} · ${a.weights.light} light, ${a.weights.middling} middling, ${a.weights.heavy} heavy</dd>
+      <dt>Horizon</dt><dd>${horizon}</dd>
+    </dl>
+    <div class="hist" role="img" aria-label="${`Books by difficulty, 1 to 10: ${a.hist.join(", ")}`}">${a.hist.map((n, i) => html`<span title="${`difficulty ${i + 1}: ${n}`}"><i style="${`height:${((n / peak) * 100).toFixed(0)}%`}"></i><b>${i + 1}</b></span>`)}</div>
+    ${w.compare ? html`<p>${w.compare}</p>` : ""}
+    <table class="stretches"><thead><tr><th></th><th>Books</th><th>Pages</th><th>Tokens</th><th>Difficulty</th></tr></thead>
+      <tbody>${row("Next", w.parts.next)}${row("Soon", w.parts.soon)}${row("The stacks", w.parts.stacks)}</tbody></table>
+    <figcaption class="quiet small">Difficulty is reading effort, not merit. Tokens at ${S.settings.minutesPerToken} minutes each.</figcaption>
+  </figure>`;
+}
+
+/** The latest week's outlook: where the books in hand are heading, and what waits next. */
+function outlook(facts) {
+  const d = derived(), t = new Date();
+  const order = new Map(facts.reading.map((r, i) => [r.id, i]));
+  const inHand = books().filter(b => b.status === "reading").sort((a, b) => (order.get(a.id) ?? 99) - (order.get(b.id) ?? 99)).map(b => {
+    const f = d.fc.get(b.id);
+    return { title: effective(b).title, page: currentPage(evs(b.id)), finishAt: f && f.finish != null && !f.beyond ? new Date(+t + f.finish * 864e5).toISOString() : null };
+  });
+  return { inHand, next: waiting()[0] ? effective(waiting()[0]).title : null, now: t.toISOString() };
+}
+
+function letters() {
+  const d = derived(), t = new Date(), thisWeek = +L.weekStart(t);
+  return L.letterWeeks(S.events, t).map(start => {
+    const f = L.weekFacts({ books: books(), byBook: S.byBook, p: d.p, start });
+    const current = +start === thisWeek;
+    if (!current && !f.reading.length && !f.finished.length && !f.begun.length && !f.aside.length && !f.notes.length) return null;
+    return { start, current, f, text: L.shelfLetter(f, { outlook: current ? outlook(f) : null, ital: italH, esc }) };
+  }).filter(Boolean);
+}
+
+function letterBlock(l) {
+  const f = l.f;
+  return html`<article class="letter">
+    <p class="dateline sc"><span>${l.current ? "This week, so far" : `The week of ${shortDate(l.start)}`}</span></p>
+    ${l.text.map(x => html`<p>${raw(x)}</p>`)}
+    ${f.pages ? html`<p class="quiet small">${plural(f.pages, "page")} · about ${L.duration(f.minutes)} · ${plural(f.days, "reading day")}</p>` : ""}
+  </article>`;
+}
+
+/** On the Desk: a quiet line when last week's letter hasn't been read. */
+function letterLine() {
+  const last = +L.weekStart(new Date()) - 7 * 864e5;
+  if (S.letterSeen && +new Date(S.letterSeen) >= last) return "";
+  const had = S.events.some(e => e.source === "app" && e.at >= new Date(last).toISOString() && e.at < new Date(last + 7 * 864e5).toISOString());
+  return had ? html`<p class="small"><a href="#/library#letters">The shelf letter for the week of ${shortDate(last)}</a></p>` : "";
+}
+function markLetterSeen() {
+  const last = new Date(+L.weekStart(new Date()) - 7 * 864e5).toISOString();
+  if (S.letterSeen && S.letterSeen >= last) return;
+  S.letterSeen = last;
+  store.setMeta("letterSeen", last).catch(() => {});
+}
+
+function viewLibrary() {
+  const ls = letters();
+  const years = L.commonplace(books(), S.byBook);
+  const finished = books().filter(b => b.status === "read").length;
+  return html`
+    <div class="dateline sc"><span>${plural(S.books.size, "volume")}</span><span>The Library</span></div>
+    <h1>The Library</h1>
+    <section><h2 class="sc small">Wall label</h2>${wallLabelBlock()}</section>
+    <section id="letters"><h2 class="sc small">Shelf letters</h2>
+      <p class="quiet small">Written each week from what you logged: no AI, nothing sent anywhere.</p>
+      ${ls.slice(0, 2).map(letterBlock)}
+      ${ls.length > 2 ? html`<details class="older"><summary>Earlier letters (${ls.length - 2})</summary>${ls.slice(2).map(letterBlock)}</details>` : ""}</section>
+    <section><h2 class="sc small">Commonplace book</h2>
+      ${years.length ? years.map(([y, items]) => html`<h3 class="sc small">${y}</h3><ul class="commonplace">${items.map(it => html`<li>
+        <blockquote>${it.text}</blockquote><p class="small">— <a href="#/book/${it.id}"><i>${it.title}</i></a>${it.author ? `, ${it.author}` : ""}${it.kind === "note" ? `${it.page ? `, p. ${it.page}` : ""} · ${shortDate(it.at)}` : ""}</p></li>`)}</ul>`)
+        : html`<p class="quiet">Your own lines (a book's annotation, once you've written it yourself) and your notes in the margin gather here, by year.</p>`}</section>
+    <section><h2 class="sc small">Colophons</h2>
+      <p>${finished ? html`Each finished or set-aside book carries its colophon on its page. ${raw(books().filter(b => b.status === "read" || b.status === "abandoned").sort((a, b) => ((L.colophon(b, evs(b.id), derived().p).finished || "") > (L.colophon(a, evs(a.id), derived().p).finished || "") ? 1 : -1)).slice(0, 8).map(b => `<a href="#/book/${esc(b.id)}"><i>${esc(effective(b).title)}</i></a>`).join(" · "))}` : "Finish a book and its colophon appears on its page."}</p></section>`;
+}
+
 const STATUS_LABEL = { want: "Waiting", reading: "In hand", paused: "Paused", read: "Read", abandoned: "Set aside" };
 
 function describe(e) {
@@ -812,6 +928,7 @@ function describe(e) {
     if (e.to === "reading") return e.from === "paused" ? "Resumed" : e.from === "read" ? "Begun again" : "Begun";
     return { want: "Returned to the list", paused: "Paused", read: "Finished", abandoned: "Set aside" }[e.to];
   }
+  if (e.type === "note") return `“${e.text}”${e.page ? ` (p. ${e.page})` : ""}`;
   return e.type;
 }
 
@@ -879,8 +996,10 @@ function viewBook(id) {
         </form>
       </details>
 
+      ${["read", "abandoned"].includes(b.status) ? colophonBlock(b) : ""}
       <h2 class="sc small">History</h2>
-      <ol class="history">${[...list].reverse().map(x => html`<li><span class="d">${x.approx ? shortDate(x.at) : relativeDay(x.at)}</span><span>${describe(x)}${x.approx ? raw(' <span class="quiet">(from Goodreads)</span>') : ""}</span></li>`)}</ol>
+      ${S.noteFor === id ? noteForm(b, page) : html`<p><button class="link" data-act="note-open" data-id="${id}">Note in the margin${page ? ` at p. ${page}` : ""}</button></p>`}
+      <ol class="history">${[...list].reverse().map(x => html`<li class="${x.type === "note" ? "note" : ""}"><span class="d">${x.approx ? shortDate(x.at) : relativeDay(x.at)}</span><span>${describe(x)}${x.approx ? raw(' <span class="quiet">(from Goodreads)</span>') : ""}${x.type === "note" ? html` <button class="link small" data-act="note-del" data-id="${id}" data-ev="${x.id}">Remove</button>` : ""}</span></li>`)}</ol>
 
       <p class="danger">${S.confirm === `delete:${id}`
         ? html`Remove <i>${e.title}</i> and its history from this library? This can't be undone, except from a backup.
@@ -966,10 +1085,10 @@ function viewImport() {
       <p class="quiet small">Want to Read and Currently Reading become your list; Read becomes history. Other shelves are left out. Re-importing later is safe: books are matched, your edits are kept, and nothing is deleted.</p>
       <h2 class="sc small">Or the bookmark</h2>
       <p>Quicker, and it keeps your shelf order. Drag this to your bookmarks bar:
-        ${S.bmHref ? html`<a class="button quietbtn bm" href="${S.bmHref}" data-bm="1">Antilibrary: read my shelves</a>` : html`<span class="quiet">(loading…)</span>`}</p>
+        ${S.bmHref ? html`<a class="button quietbtn bm" href="${S.bmHref}" data-bm="1">Tsundoku Tracker: read my shelves</a>` : html`<span class="quiet">(loading…)</span>`}</p>
       <ol class="steps">
         <li>On goodreads.com, signed in, click the bookmark. It reads your three shelves in that tab, a page a second.</li>
-        <li>Choose <i>Send to Antilibrary</i>: this page opens with what the import will do. Nothing changes until you say.</li>
+        <li>Choose <i>Send to Tsundoku Tracker</i>: this page opens with what the import will do. Nothing changes until you say.</li>
       </ol>
       <p class="quiet small">If the browser blocks that, choose <i>Copy</i> instead and <button class="link" data-act="paste-open">paste it here</button>. The bookmark only talks to Goodreads and to this app.</p>
       ${S.paste ? html`<form data-form="paste" class="stack"><label class="vh" for="paste">What the bookmark copied</label>
@@ -1013,7 +1132,7 @@ function viewSettings() {
           ? html`Saved automatically after every change${auto.lastWrite ? `, last ${relativeDay(auto.lastWrite)}` : ""}.
               ${auto.state !== "granted" ? html` <button data-act="auto-reconnect">Reconnect</button>` : ""}
               <button class="link" data-act="auto-disconnect">Stop</button>`
-          : html`Choose a file in Dropbox or iCloud Drive and Antilibrary keeps it up to date. The phone reads the same file.
+          : html`Choose a file in Dropbox or iCloud Drive and Tsundoku Tracker keeps it up to date. The phone reads the same file.
               <button data-act="auto-connect">Choose a file…</button>`}</p>` : html`
         <p class="quiet">This browser can't keep a backup file up to date by itself. Save a copy after reading, and load the shared copy when you open the app.</p>`}
       <p><button data-act="export">Save a copy now</button>
@@ -1057,7 +1176,7 @@ function viewSettings() {
 
     <section><h2 class="sc small">Library</h2>
       <p><a href="#/import">Import from Goodreads</a> · <a href="#/add">Add a book by hand</a></p>
-      <p class="quiet small">Antilibrary ${APP_VERSION} · data version ${SCHEMA_VERSION}</p>
+      <p class="quiet small">Tsundoku Tracker ${APP_VERSION} · data version ${SCHEMA_VERSION}</p>
     </section>`;
 }
 
@@ -1073,11 +1192,11 @@ async function fillSnapshots() {
 
 function render() {
   const root = document.getElementById("app");
-  if (S.error) { root.innerHTML = html`<main class="page"><h1>Antilibrary couldn't open</h1><p>${S.error}</p></main>`; return; }
+  if (S.error) { root.innerHTML = html`<main class="page"><h1>Tsundoku Tracker couldn't open</h1><p>${S.error}</p></main>`; return; }
   if (!S.ready) return;
   const [name, arg] = route();
-  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads }[name] || viewDesk;
-  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk" }[name] || "desk";
+  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary }[name] || viewDesk;
+  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library" }[name] || "desk";
   const focus = document.activeElement?.id;
   root.innerHTML = html`${nav(active)}<main class="page">${notices()}${view()}</main>`;
   if (S.focusRow && document.getElementById(`row-${S.focusRow}`)) {
@@ -1091,6 +1210,7 @@ function render() {
     if (el.type === "search") el.setSelectionRange(el.value.length, el.value.length);
   }
   if (name === "settings") fillSnapshots();
+  if (name === "library") markLetterSeen();
 }
 
 // --- Actions ------------------------------------------------------------------------
@@ -1100,6 +1220,9 @@ async function act(name, d) {
   const b = d.id ? S.books.get(d.id) : null;
   switch (name) {
     case "dismiss": S.notice = null; return render();
+    case "note-open": S.noteFor = d.id; render(); document.getElementById(`note-${d.id}`)?.focus(); return;
+    case "note-close": S.noteFor = null; return render();
+    case "note-del": return commit({ removeEvents: [d.ev] });
     case "cancel": S.confirm = null; return render();
     case "add": {
       const r = logPages(b, evs(b.id), +d.n, t);
@@ -1273,6 +1396,14 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "note": {
+      const text = (f.get("text") || "").trim();
+      S.noteFor = null;
+      if (!text) return render();
+      const page = currentPage(evs(b.id));
+      S.notice = `Noted in the margin of ${effective(b).title}${page ? ` at p. ${page}` : ""}.`;
+      return commit({ events: [{ id: eventId(), bookId: b.id, at: t, type: "note", text, page: page || null, source: "app" }] });
+    }
     case "paste": {
       try { takeBookmarklet(JSON.parse(f.get("json") || "")); S.paste = false; }
       catch (e) { S.notice = e instanceof SyntaxError ? "That isn't what the bookmark copies." : e.message; }
@@ -1456,7 +1587,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "0.6.0 (Stage 6: the Goodreads round trip)";
+export const APP_VERSION = "0.7.0 (Stage 7: the library)";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

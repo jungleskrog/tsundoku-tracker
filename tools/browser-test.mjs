@@ -80,7 +80,7 @@ try {
   if (HELPER) {
     await until("window.__antilibrary.books.size > 0", 20000);
     check(true, `with the helper, the library arrives by itself (${await evaluate("window.__antilibrary.books.size")} books)`);
-  } else check((await text()).includes("An empty antilibrary"), "first run shows the welcome");
+  } else check((await text()).includes("Nothing piled up yet"), "first run shows the welcome");
   await shot("1-welcome");
   await go(`${BASE}/#/import`);
   await until("!!document.querySelector('input[data-change=csv]')");
@@ -334,6 +334,46 @@ try {
     check(await evaluate(`${A}.books.get('${moved}').status`) === "read", "a book read on Goodreads is marked read here");
     const nb = await evaluate(`(() => { const b = [...${A}.books.values()].find(b => b.refs && b.refs.goodreadsBookId === '999000111'); return b && { flag: !!(b.flags && b.flags.placeByYouth), status: b.status }; })()`);
     check(nb && nb.status === "want" && nb.flag, "the new book waits to find its place by reading-youth");
+  }
+
+  // Stage 7: the name, the Library, colophons, margin notes
+  {
+    const A = "window.__antilibrary";
+    await go(`${BASE}/#/`); await until("!!document.querySelector('.brand')");
+    check(await evaluate("document.title === 'Tsundoku Tracker' && document.querySelector('.brand').textContent === 'Tsundoku Tracker'"), "the app is called Tsundoku Tracker");
+    if (!HELPER) {
+      // a margin note from the desk
+      const inHand = await evaluate("document.querySelector('[data-act=note-open]') && document.querySelector('[data-act=note-open]').dataset.id");
+      check(!!inHand, "the desk offers a note in the margin");
+      await click("[data-act=note-open]"); await until("!!document.querySelector('form[data-form=note]')");
+      await evaluate("(() => { const f = document.querySelector('form[data-form=note]'); f.text.value = 'the chess game in the saloon'; f.requestSubmit(); })()"); await sleep(300);
+      check(await evaluate(`${A}.events.some(e => e.type === 'note' && e.text === 'the chess game in the saloon' && e.bookId === '${inHand}')`), "the note is kept in the history");
+      await go(`${BASE}/#/book/${inHand}`); await until("!!document.querySelector('.history li.note')");
+      check((await text()).includes("“the chess game in the saloon”"), "the book's history shows the note");
+    }
+    await go(`${BASE}/#/library`); await until("!!document.querySelector('.wall-label')");
+    const lib = await text();
+    check(/The waiting list/i.test(lib) && /Extent/.test(lib) && /Weight/.test(lib) && /Horizon/.test(lib), "the wall label gives extent, weight and horizon");
+    check(await evaluate("document.querySelectorAll('.stretches tbody tr').length") === 3 && await evaluate("document.querySelectorAll('.hist span').length") === 10, "the label breaks the list into Next, Soon and the stacks, with a difficulty histogram");
+    check(await evaluate("!!document.querySelector('.letter')") && /This week, so far/.test(lib), "this week's shelf letter is written");
+    if (!HELPER) {
+      check(/you wrote: “the chess game in the saloon”/.test(lib), "the letter quotes the week's margin note");
+      check(/the chess game in the saloon/.test(await evaluate("document.querySelector('.commonplace') ? document.querySelector('.commonplace').innerText : ''")), "the commonplace book gathers the note");
+      const readId = await evaluate(`([...${A}.books.values()].find(b => b.status === 'read' && (${A}.byBook.get(b.id) || []).some(e => e.type === 'progress' && e.source === 'app')) || {}).id`);
+      await go(`${BASE}/#/book/${readId}`); await until("!!document.querySelector('.colophon-page')");
+      check(/Begun|Finished/.test(await evaluate("document.querySelector('.colophon-page').innerText")), "a finished book carries its colophon");
+    } else {
+      const readId = await evaluate(`([...${A}.books.values()].find(b => b.status === 'read') || {}).id`);
+      await go(`${BASE}/#/book/${readId}`); await until("!!document.querySelector('.colophon-page')");
+      check(/goodreads|finished/i.test(await evaluate("document.querySelector('.colophon-page').innerText")), "a finished book carries its colophon (real library)");
+    }
+    await shot("16-colophon");
+    await go(`${BASE}/#/library`); await until("!!document.querySelector('.wall-label')");
+    await shot("17-library");
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(300);
+    check(!(await evaluate("document.documentElement.scrollWidth > window.innerWidth + 1")), "the Library fits a phone");
+    await shot("18-library-phone");
+    await send("Emulation.clearDeviceMetricsOverride");
   }
 
   // phone width
