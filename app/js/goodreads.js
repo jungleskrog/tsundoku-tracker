@@ -8,6 +8,15 @@ export const SHELF_NAME = { "to-read": "Want to Read", "currently-reading": "Cur
 const TARGET = { want: "to-read", reading: "currently-reading", read: "read" };
 
 export const bookUrl = b => `${GR}/book/show/${encodeURIComponent(b.refs.goodreadsBookId)}`;
+export const editionUrl = id => `${GR}/book/show/${encodeURIComponent(id)}`;
+export const editionsUrl = workId => `${GR}/work/editions/${encodeURIComponent(workId)}`;
+
+/** A Goodreads book number from a link ("…/book/show/975465-don-quixote") or the number itself. */
+export function bookIdFrom(text) {
+  const t = String(text || "").trim();
+  const m = t.match(/goodreads\.com\/(?:[a-z]{2}\/)?book\/show\/(\d+)/i) || t.match(/^(\d{3,})$/);
+  return m ? m[1] : null;
+}
 export const searchUrl = (title, author) => `${GR}/search?q=${encodeURIComponent([title, author].filter(Boolean).join(" "))}`;
 
 /** Is this book's Goodreads shelf something the app knows (it came from Goodreads)? */
@@ -30,6 +39,8 @@ export function changesForGoodreads(books) {
       if (TARGET[b.status] && TARGET[b.status] !== from) item = { id: b.id, kind: "shelf", from, to: TARGET[b.status] };
       if (b.status === "abandoned" && (from === "to-read" || from === "currently-reading")) item = { id: b.id, kind: "off", from, to: null };
       if (b.status === "paused" && from === "read") item = { id: b.id, kind: "shelf", from, to: "currently-reading" };
+      const ge = b.mine?.grEdition;
+      if (!item && ge && ge.id && !ge.coverOnly && ge.id !== b.refs.goodreadsBookId) item = { id: b.id, kind: "edition", from: b.refs.goodreadsBookId, to: ge.id };
     } else if (!b.refs?.goodreadsBookId && b.status !== "abandoned") {
       item = { id: b.id, kind: "missing", from: null, to: TARGET[b.status] || "currently-reading" };
     }

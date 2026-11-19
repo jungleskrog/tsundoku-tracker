@@ -65,7 +65,7 @@ export function colophon(book, bookEvents, p) {
   const approx = bookEvents.some(x => x.type === "status" && x.approx && (x.to === "read" || x.to === "abandoned"));
   const ended = book.status === "abandoned" ? [...bookEvents].reverse().find(x => x.type === "status" && x.to === "abandoned")?.at || null : d.finished;
   return {
-    title: e.title, author: e.author, edition: e.edition, publisher: book.synced?.publisher || null, pages: e.pages,
+    title: e.title, author: e.author, edition: e.edition, publisher: e.publisher || null, pages: e.pages,
     status: book.status, started: d.started, finished: ended, page: currentPage(bookEvents),
     days: d.started && ended ? daysBetween(d.started, ended) + 1 : null,
     sittings: [...byDay.values()].filter(x => x > 0).length, pagesHere, tokens, minutes: tokens * p.tau, D,

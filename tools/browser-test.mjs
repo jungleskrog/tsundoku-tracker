@@ -467,6 +467,34 @@ try {
     await send("Emulation.clearDeviceMetricsOverride");
   }
 
+  // 1.2: count afresh; change edition (looked up through the helper)
+  {
+    const A = "window.__antilibrary";
+    await go(`${BASE}/#/settings`); await until("!!document.querySelector('[data-act=ledger-reset]')");
+    await click("[data-act=ledger-reset]"); await sleep(300);
+    check(await evaluate(`!!${A}.settings.ledgerFrom`) && (await text()).includes("Counting afresh"), "ahead or behind can be counted afresh from today");
+    if (HELPER) {
+      const wid = await evaluate(`([...${A}.books.values()].find(b => /Wretched of the Earth/.test((b.synced || {}).title || "")) || {}).id`);
+      if (wid) {
+        await go(`${BASE}/#/book/${wid}`); await until("!!document.querySelector('[data-act=ed-open]')");
+        await click("[data-act=ed-open]"); await until("!!document.getElementById('ed-q')");
+        await evaluate("(() => { const f = document.querySelector('form[data-form=edition-look]'); f.q.value = 'https://www.goodreads.com/book/show/539813.The_Wretched_of_the_Earth'; f.requestSubmit(); })()");
+        await until("!!document.querySelector('[data-act=ed-use][data-mode=edition]')", 30000);
+        check((await text()).includes("Grove Press"), "pasting a Goodreads link looks the edition up");
+        await click("[data-act=ed-use][data-mode=edition]"); await sleep(400);
+        const b = await evaluate(`${A}.books.get('${wid}').mine.grEdition`);
+        check(b && b.id === "539813" && (await text()).includes("(your choice)"), "the chosen edition is used (cover, pages, publisher)");
+        await evaluate(`(() => { const b = ${A}.books.get('${wid}'); b.flags = { ...b.flags, goneFromGoodreads: null }; ${A}.version++; })()`); // an earlier test import flagged it
+        await go(`${BASE}/#/goodreads`); await until("document.querySelector('h1') && document.querySelector('h1').textContent === 'For Goodreads'");
+        const gtxt = await text();
+        check(gtxt.includes("Switch to the edition you chose"), "For Goodreads lists the edition switch to make there");
+        await go(`${BASE}/#/book/${wid}`); await until("!!document.querySelector('[data-act=ed-clear]')");
+        await click("[data-act=ed-clear]"); await sleep(300);
+        check(!(await evaluate(`!!${A}.books.get('${wid}').mine.grEdition`)), "and you can go back to the Goodreads edition");
+      }
+    }
+  }
+
   // phone width
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await go(`${BASE}/`); await until("window.__antilibrary && window.__antilibrary.ready");

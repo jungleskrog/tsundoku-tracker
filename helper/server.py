@@ -86,6 +86,34 @@ def session():
     return gr.Session(gr.chrome_cookie_header())
 
 
+EDITION_LOCK = threading.Lock()
+
+
+def edition(bid: str):
+    """Facts for one edition: from the catalogue if looked up before, else one Goodreads page."""
+    with LOCK:
+        known = catalogue["entries"].get("gr:" + bid, {}).get("edition")
+    if known:
+        return 200, known
+    if state.get("paused_until", 0) > time.time():
+        return 503, {"error": "Goodreads asked the helper to slow down; try again in a few hours."}
+    with EDITION_LOCK:
+        try:
+            d = gr.book_details(session(), bid)
+        except gr.Throttled as ex:
+            state["paused_until"] = time.time() + 6 * 3600
+            return 503, {"error": str(ex)}
+        except gr.GoodreadsError as ex:
+            return 502, {"error": str(ex)}
+    out = {"id": bid, "title": d.get("title"), "author": d.get("author"), "pages": d.get("pages"), "binding": d.get("format"),
+           "publisher": d.get("publisher"), "isbn13": d.get("isbn13"), "coverUrl": d.get("cover_url"), "workId": d.get("work_id"),
+           "year": d.get("year_original"), "language": d.get("language")}
+    with LOCK:
+        entry("gr:" + bid)["edition"] = out
+        save("catalogue.json", catalogue)
+    return 200, out
+
+
 def user_id(s: gr.Session) -> str:
     if settings.get("goodreads_user_id"):
         return settings["goodreads_user_id"]
@@ -304,6 +332,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/catalogue":
             with LOCK:
                 return self.reply(200, catalogue)
+        if path == "/edition":
+            # One Goodreads edition's facts (cover, pages, binding, publisher), for "Change edition" in the app.
+            from urllib.parse import parse_qs, urlparse
+            bid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+            if not bid.isdigit():
+                return self.reply(400, {"error": "Give a Goodreads book number."})
+            return self.reply(*edition(bid))
         self.reply(404, {"error": "not found"})
 
     def do_POST(self):

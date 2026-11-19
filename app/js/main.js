@@ -27,7 +27,7 @@ const S = {
   helper: { connected: false, status: null, estimate: null, asks: [] },
   menu: null, listNote: null, undoOrder: null, focusRow: null,
   bmHref: null, bmInbox: [], paste: false,
-  noteFor: null, letterSeen: null, openRow: null,
+  noteFor: null, letterSeen: null, openRow: null, edPanel: null,
   sync: { rec: null, state: "off", last: null, error: null, busy: false, again: false, pasting: false },
 };
 
@@ -48,7 +48,8 @@ function derived() {
   const all = books();
   const earned = M.earnings(all, S.byBook, p);
   const firstUse = M.firstUseOf(S.events);
-  const led = M.ledger({ earned, events: S.events, settings: S.settings, now: t, firstUse });
+  const countFrom = S.settings.ledgerFrom && (!firstUse || S.settings.ledgerFrom > firstUse) ? S.settings.ledgerFrom : firstUse;
+  const led = M.ledger({ earned, events: S.events, settings: S.settings, now: t, firstUse: countFrom });
   const earnedTodayBy = new Map();
   for (const e of earned) if (e.day === day) earnedTodayBy.set(e.bookId, (earnedTodayBy.get(e.bookId) || 0) + e.tokens);
   const fc = M.forecast({ books: all, byBook: S.byBook, settings: S.settings, now: t, earnedToday: led ? led.todayTokens : 0, earnedTodayBy, earned, firstUse });
@@ -291,12 +292,16 @@ function watchHelper() {
 async function pullFromHelper() {
   const t = now();
   const shelf = await H.shelves().catch(() => null);
-  if (shelf && shelf.synced_at && shelf.synced_at !== (await store.getMeta("helperShelvesApplied"))) {
-    const plan = planImport(books(), H.incomingFromShelves(shelf), { now: t, source: "goodreads-helper" });
+  // PLAN_RULES: bump when the import rules change, so the shelves are looked at again once
+  const PLAN_RULES = 2;
+  const rulesChanged = (await store.getMeta("helperPlanRules")) !== PLAN_RULES;
+  if (shelf && shelf.synced_at && (rulesChanged || shelf.synced_at !== (await store.getMeta("helperShelvesApplied")))) {
+    const plan = planImport(books(), H.incomingFromShelves(shelf), { now: t, source: "goodreads-helper", hasHistory: id => evs(id).some(e => e.source === "app") });
     S.helper.asks = plan.asks;
     const said = await applyPlan(plan, { snapshotOver: 5, label: "before a Goodreads sync" });
     if (said) S.notice = `From Goodreads: ${said}.`;
     await store.setMeta("helperShelvesApplied", shelf.synced_at);
+    await store.setMeta("helperPlanRules", PLAN_RULES);
   }
   const cat = await H.catalogue().catch(() => null);
   if (cat) {
@@ -319,6 +324,9 @@ async function pullFromHelper() {
     }
     if (putBooks.length) await commit({ books: putBooks });
   }
+  for (const b of books().filter(x => x.mine?.grEdition && x.mine.grEdition.pending)) {
+    try { const ed = await H.edition(b.mine.grEdition.id); await commit({ books: [patchBook(b, { mine: { ...b.mine, grEdition: { ...b.mine.grEdition, ...ed, pending: false } } }, now())] }); } catch { /* next time */ }
+  }
   const placed = await placeByYouth();
   if (placed.length) S.notice = [S.notice, `Placed by reading-youth: ${placed.map(([id, at]) => `${titleOf(id)} (no. ${at + 1})`).join(", ")}.`].filter(Boolean).join(" ");
   await autoScore().catch(e => console.warn("auto-score", e));
@@ -333,10 +341,18 @@ async function pullFromHelper() {
 async function applyPlan(plan, { snapshotOver = 0, label = "before a Goodreads import" } = {}) {
   const t = now(), work = new Map();
   const put = (id, patch) => work.set(id, patchBook(work.get(id) || S.books.get(id), patch, t));
-  for (const u of plan.updates) put(u.id, { synced: u.synced, refs: u.refs });
+  const extra = [];
+  for (const u of plan.updates) {
+    put(u.id, { synced: u.synced, refs: u.refs });
+    const b = S.books.get(u.id);
+    if (u.relink && b && !("pages" in (b.mine || {})) && !b.mine?.grEdition) {
+      const cur = currentPage(evs(u.id)), to = mapPage(cur, u.relink.oldPages, u.relink.newPages, u.relink.sameWork);
+      if (to != null) extra.push({ id: eventId(), bookId: u.id, at: t, type: "progress", page: to, prevPage: cur, source: "edition" });
+    }
+  }
   for (const id of plan.gone) put(id, { flags: { ...(work.get(id) || S.books.get(id)).flags, goneFromGoodreads: t } });
   for (const id of plan.back) put(id, { flags: { ...(work.get(id) || S.books.get(id)).flags, goneFromGoodreads: null } });
-  const events = plan.creates.flatMap(c => c.events);
+  const events = [...plan.creates.flatMap(c => c.events), ...extra];
   for (const m of plan.adopt || []) {
     const b = work.get(m.id) || S.books.get(m.id);
     const last = evs(m.id).at(-1)?.at || "";
@@ -351,12 +367,16 @@ async function applyPlan(plan, { snapshotOver = 0, label = "before a Goodreads i
     }
     put(m.id, patch);
   }
+  const drop = (plan.merges || []).map(m => m.drop);
+  for (const id of drop) work.delete(id);
   const putBooks = [...plan.creates.map(c => c.book), ...work.values()];
-  if (!putBooks.length) return "";
-  if (snapshotOver >= 0 && plan.creates.length > snapshotOver) await store.snapshot(label, archive());
-  await commit({ books: putBooks, events });
+  if (!putBooks.length && !drop.length) return "";
+  if ((snapshotOver >= 0 && plan.creates.length > snapshotOver) || drop.length) await store.snapshot(label, archive());
+  await commit({ books: putBooks, events, removeBooks: drop });
   const moved = (plan.adopt || []).length;
+  const eds = plan.updates.filter(u => u.relink).map(u => (u.relink.sameWork ? `${shortTitle(u.relink.oldTitle)} (another edition)` : `${shortTitle(u.relink.oldTitle)} → ${shortTitle(u.relink.newTitle)}`));
   return [plan.creates.length && plural(plan.creates.length, "new book"),
+    eds.length && `edition changes followed: ${eds.join(", ")}`,
     moved && `${plural(moved, "book")} moved shelf there, so ${moved === 1 ? "it's" : "they're"} moved here too`,
     plan.gone.length && `${plan.gone.length} no longer on Goodreads`].filter(Boolean).join(", ");
 }
@@ -669,7 +689,8 @@ function todayBlock() {
   return html`<section class="today" aria-label="Today">
     <div class="big"><span class="n">${shown}</span><small> / ${goal}</small><div class="lbl sc">tokens today</div></div>
     <div><div class="meter" role="img" aria-label="${`${Math.round(pct)}% of today's tokens`}"><i style="${`width:${pct.toFixed(1)}%`}"></i></div>
-      <p class="words">${stand} <span class="quiet">${today >= goal ? "Today's reading is done." : `About ${L.duration(left)} left today.`}</span></p></div>
+      <p class="words">${stand} <span class="quiet">${today >= goal ? "Today's reading is done." : `About ${L.duration(left)} left today.`}</span>
+        ${l && l.balance < -0.5 * goal ? html` <button class="link small" data-act="ledger-reset">Count afresh from today</button>` : ""}</p></div>
   </section>`;
 }
 
@@ -1007,14 +1028,15 @@ function grWords(b, x) {
   const fin = bookDates(evs(b.id)).finished, began = bookDates(evs(b.id)).started;
   if (x.kind === "off") return `Set aside here: take it off ${G.SHELF_NAME[x.from]} there (or put it on a did-not-finish shelf, if you keep one).`;
   if (x.kind === "missing") return `Not on Goodreads. Add it to ${G.SHELF_NAME[x.to]} if you want it there.`;
+  if (x.kind === "edition") { const ge = b.mine.grEdition; return `Switch to the edition you chose (${[ge.binding, ge.publisher, ge.pages ? `${ge.pages} pages` : null].filter(Boolean).join(", ")}): open it on Goodreads and choose “Switch to this edition”. Your shelf, dates and review move with it.`; }
   const when = x.to === "read" && fin ? `, finished ${shortDate(fin)}` : x.to === "currently-reading" && began ? `, begun ${shortDate(began)}` : "";
   return `Put it on ${G.SHELF_NAME[x.to]}${when}${x.from ? ` (it's on ${G.SHELF_NAME[x.from]} there)` : ""}.${x.from === "read" ? " Moving a book off Read removes its read date there." : ""}`;
 }
 
 function viewGoodreads() {
   const items = grItems();
-  const groups = [["shelf", "Change the shelf"], ["off", "Set aside here"], ["missing", "Not on Goodreads"]];
-  const link = (b, x) => (x.kind === "missing" ? G.searchUrl(effective(b).title, effective(b).author) : G.bookUrl(b));
+  const groups = [["shelf", "Change the shelf"], ["edition", "Switch edition"], ["off", "Set aside here"], ["missing", "Not on Goodreads"]];
+  const link = (b, x) => (x.kind === "missing" ? G.searchUrl(effective(b).title, effective(b).author) : x.kind === "edition" ? G.editionUrl(x.to) : G.bookUrl(b));
   return html`
     <div class="dateline sc"><span>${plural(items.length, "change")}</span><span>For Goodreads</span></div>
     <h1>For Goodreads</h1>
@@ -1027,6 +1049,7 @@ function viewGoodreads() {
           <a href="#/book/${b.id}"><i>${effective(b).title}</i></a> <span class="quiet">${effective(b).author}</span><br>
           <span class="small">${grWords(b, x)}</span>
           <span class="btns"><a class="button quietbtn" href="${link(b, x)}" target="_blank" rel="noopener">${x.kind === "missing" ? "Find it" : "Open"} on Goodreads</a>
+            ${x.kind === "edition" && b.refs?.goodreadsWorkId ? html`<a class="small" href="${G.editionsUrl(b.refs.goodreadsWorkId)}" target="_blank" rel="noopener">All editions</a>` : ""}
             <button class="link" data-act="gr-done" data-id="${b.id}">Done</button></span></li>`; })}</ul></section>` : "";
     }) : html`<p class="quiet">Nothing to change: Goodreads matches the app.</p>`}
     ${S.helper.connected ? html`<p><button data-act="helper-sync">Read Goodreads now</button> <span class="quiet small">to confirm what you've changed.</span></p>` : ""}`;
@@ -1196,6 +1219,7 @@ function viewLibrary() {
 const STATUS_LABEL = { want: "Waiting", reading: "In hand", paused: "Paused", read: "Read", abandoned: "Set aside" };
 
 function describe(e) {
+  if (e.type === "progress" && e.source === "edition") return `Edition changed: p. ${e.prevPage} → ${e.page}`;
   if (e.type === "progress") return e.prevPage === 0 && e.source !== "app" ? `p. ${e.page}` : `p. ${e.prevPage} → ${e.page}`;
   if (e.type === "status") {
     if (e.from == null) return "Added to the list";
@@ -1229,7 +1253,7 @@ function viewBook(id) {
       ${e.annotation ? html`<blockquote class="epigraph">${e.annotation}</blockquote>` : ""}
       <dl class="colophon">
         <dt>First published</dt><dd>${e.year ?? "—"}</dd>
-        <dt>Edition</dt><dd>${[e.edition, s.publisher].filter(Boolean).join(", ") || "—"}</dd>
+        <dt>Edition</dt><dd>${[e.edition, e.publisher].filter(Boolean).join(", ") || "—"}${b.mine?.grEdition && !b.mine.grEdition.coverOnly ? raw(' <span class="quiet">(your choice)</span>') : ""}<br>${editionPanel(b)}</dd>
         <dt>Pages</dt><dd>${e.pages ?? "unknown"}${"pages" in m ? raw(' <span class="quiet">(your count)</span>') : ""}</dd>
         <dt>Progress</dt><dd>${page ? `page ${page}` : "not begun"}${e.pages && page ? ` · ${Math.round((page / e.pages) * 100)}%` : ""}</dd>
         <dt>Difficulty</dt><dd>${diffText(b)}</dd>
@@ -1280,6 +1304,50 @@ function viewBook(id) {
            <button data-act="delete" data-id="${id}">Remove it</button> <button class="link" data-act="cancel">Keep it</button>`
         : html`<button class="link" data-act="ask-delete" data-id="${id}">Remove from the library…</button>`}</p>
     </article>`;
+}
+
+// --- Changing edition (or just the cover) -------------------------------------------------
+
+/** Where your place goes when the page count changes: the same share of the book for another edition of it,
+ *  the same page for a different book (e.g. "Part One"), never past the end. */
+function mapPage(cur, oldPages, newPages, sameWork) {
+  if (!cur || !oldPages || !newPages || oldPages === newPages) return null;
+  const to = sameWork ? Math.round((cur / oldPages) * newPages) : Math.min(cur, newPages);
+  return to === cur ? null : to;
+}
+
+async function useEdition(b, coverOnly) {
+  const ed = S.edPanel?.ed; if (!ed) return;
+  const t = now(), e = effective(b), cur = currentPage(evs(b.id));
+  const grEdition = { id: ed.id, title: ed.title, pages: ed.pages || null, binding: ed.binding || null, publisher: ed.publisher || null, isbn13: ed.isbn13 || null, coverUrl: ed.coverUrl || null, workId: ed.workId || null, coverOnly };
+  const events = [];
+  let note = "";
+  if (!coverOnly && !("pages" in (b.mine || {}))) {
+    const sameWork = !ed.workId || !b.refs?.goodreadsWorkId || ed.workId === b.refs.goodreadsWorkId;
+    const to = mapPage(cur, e.pages, ed.pages, sameWork);
+    if (to != null) { events.push({ id: eventId(), bookId: b.id, at: t, type: "progress", page: to, prevPage: cur, source: "edition" }); note = ` Your place moved from p. ${cur} to p. ${to}.`; }
+  }
+  S.edPanel = null;
+  S.notice = coverOnly ? "The cover is changed." : `Now the ${[ed.binding, ed.publisher].filter(Boolean).join(", ") || "chosen"} edition${ed.pages ? `, ${ed.pages} pages` : ""}.${note}${b.refs?.goodreadsBookId && b.refs.goodreadsBookId !== ed.id ? " For Goodreads lists the switch to make there." : ""}`;
+  await commit({ books: [patchBook(b, { mine: { ...b.mine, grEdition } }, t)], events });
+}
+
+function editionPanel(b) {
+  const P = S.edPanel;
+  if (!P || P.id !== b.id) return html`<button class="link" data-act="ed-open" data-id="${b.id}">Change edition or cover…</button>${b.mine?.grEdition ? html` · <button class="link" data-act="ed-clear" data-id="${b.id}">Back to the Goodreads edition</button>` : ""}`;
+  if (P.step === "preview") {
+    const ed = P.ed;
+    return html`<div class="edpanel">
+      ${ed.coverUrl ? html`<img src="${ed.coverUrl}" alt="" referrerpolicy="no-referrer">` : ""}
+      <p><i>${ed.title || "Untitled"}</i>${ed.author ? html`, ${ed.author}` : ""}<br><span class="quiet small">${[ed.binding, ed.publisher, ed.pages ? `${ed.pages} pages` : null, ed.language].filter(Boolean).join(" · ")}</span></p>
+      <p><button data-act="ed-use" data-id="${b.id}" data-mode="edition">Use this edition</button> <button class="quietbtn" data-act="ed-use" data-id="${b.id}" data-mode="cover">Just its cover</button> <button class="link" data-act="ed-close">Cancel</button></p>
+      <p class="quiet small">The edition brings its cover, pages and publisher; your place is kept${currentPage(evs(b.id)) ? ", moved to the same point in the book" : ""}. Your own corrections still win.</p></div>`;
+  }
+  if (P.step === "nohelper") return html`<p class="notice">Looking up an edition needs the Mac helper running (it reads Goodreads for you). Open the app on your Mac and try again. <button class="link" data-act="ed-close">OK</button></p>`;
+  return html`<form class="inline edform" data-form="edition-look" data-id="${b.id}">
+    <label class="vh" for="ed-q">Goodreads link or number</label>
+    <input id="ed-q" name="q" placeholder="Goodreads link, e.g. …/book/show/975465" autocomplete="off" ${P.step === "looking" ? raw("disabled") : ""}>
+    <button ${P.step === "looking" ? raw("disabled") : ""}>${P.step === "looking" ? "Looking…" : "Look it up"}</button> <button type="button" class="link" data-act="ed-close">Cancel</button></form>`;
 }
 
 /** The book's cover: Goodreads' if known, else Open Library's by ISBN (hidden if it has none). */
@@ -1427,6 +1495,7 @@ function viewSettings() {
         <label>Tokens a day <input name="tokens" type="number" min="1" max="100" value="${S.settings.dailyTokens}" inputmode="numeric"></label>
         <button>Save</button></form>
       <p class="quiet small">${S.settings.dailyTokens} tokens ≈ ${S.settings.dailyTokens * S.settings.minutesPerToken} minutes of focused reading.</p>
+      <p class="small">Ahead or behind is counted ${S.settings.ledgerFrom ? html`from ${shortDate(S.settings.ledgerFrom)}` : "from your first entry"}, over at most the last 28 days. <button class="link" data-act="ledger-reset">Count afresh from today</button></p>
     </section>
 
     <section><h2 class="sc small">The model</h2>
@@ -1505,6 +1574,19 @@ async function act(name, d) {
       S.sync = { ...S.sync, rec: null, state: "off", last: null, error: null };
       S.notice = "This device no longer syncs. The library stays here, and the copy in Dropbox stays there.";
       return render();
+    }
+    case "ledger-reset": {
+      const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+      S.notice = "Counting afresh from today: you're on course. Your history is untouched.";
+      return commit({ settings: { ...S.settings, ledgerFrom: d0.toISOString(), updatedAt: t } });
+    }
+    case "ed-open": S.edPanel = { id: d.id, step: "ask" }; render(); document.getElementById("ed-q")?.focus(); return;
+    case "ed-close": S.edPanel = null; return render();
+    case "ed-use": return useEdition(b, d.mode === "cover");
+    case "ed-clear": {
+      const mine = { ...b.mine }; delete mine.grEdition;
+      S.notice = "Back to the Goodreads edition.";
+      return commit({ books: [patchBook(b, { mine }, t)] });
     }
     case "row-more": S.openRow = S.openRow === d.id ? null : d.id; return render();
     case "gs-installed": return commit({ settings: gsDone("installed") || S.settings });
@@ -1687,6 +1769,15 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "edition-look": {
+      const gid = G.bookIdFrom(f.get("q"));
+      if (!gid) { S.notice = "Paste a Goodreads book link (…/book/show/975465…) or its number."; return render(); }
+      if (!S.helper.connected) { S.edPanel = { id: b.id, step: "nohelper", gid }; return render(); }
+      S.edPanel = { id: b.id, step: "looking", gid }; render();
+      try { S.edPanel = { id: b.id, step: "preview", ed: await H.edition(gid) }; }
+      catch (e) { S.edPanel = { id: b.id, step: "ask" }; S.notice = `Couldn't look it up: ${e.message}`; }
+      return render();
+    }
     case "sync-code": {
       try { await finishDropbox(f.get("code") || ""); } catch (e) { S.notice = `Dropbox: ${e.message}`; }
       return render();
@@ -1888,7 +1979,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.1.0";
+export const APP_VERSION = "1.2.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

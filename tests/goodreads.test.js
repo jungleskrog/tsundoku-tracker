@@ -81,3 +81,67 @@ test("youth slot: among neighbours in a youth-ordered list, before unscored book
   assert.equal(youthSlot([b("p", 0, 60), b("q", 1, 10), b("r", 2, 70), b("x", 3, 65)], "x"), 2);
   assert.equal(youthSlot([b("p", 0, 60), b("x", 1, null)], "x"), null);
 });
+
+test("editions: a switch on Goodreads is followed (same work, or the old book gone and a lookalike in its place)", () => {
+  const books = [
+    { ...gr("fiesta", "reading", "currently-reading"), refs: { goodreadsBookId: "266466", goodreadsWorkId: "589497" }, synced: { title: "Fiesta: The Sun Also Rises", author: "Ernest Hemingway", shelf: "currently-reading", pages: 216, source: "goodreads-helper" } },
+    { ...gr("dq", "reading", "currently-reading"), refs: { goodreadsBookId: "3836", goodreadsWorkId: "121842" }, synced: { title: "Don Quixote", author: "Miguel de Cervantes Saavedra", shelf: "currently-reading", pages: 1023, source: "goodreads-helper" } },
+    { ...gr("post", "reading", "currently-reading"), refs: { goodreadsBookId: "40409718" }, synced: { title: "Post Office", author: "Charles Bukowski", shelf: "currently-reading", source: "goodreads-helper" } },
+  ];
+  const plan = planImport(books, [
+    { goodreadsBookId: "602925", workId: "589497", title: "Fiesta: The Sun Also Rises", author: "Ernest Hemingway", shelf: "currently-reading", pages: 240 },
+    { goodreadsBookId: "975465", workId: "90895262", title: "Don Quixote, Part One", author: "Miguel de Cervantes Saavedra", shelf: "currently-reading", pages: 528 },
+    { goodreadsBookId: "40409718", title: "Post Office", author: "Charles Bukowski", shelf: "currently-reading" },
+  ], { now: NOW, source: "goodreads-helper" });
+  assert.deepEqual(plan.relinks.sort(), ["dq", "fiesta"]);
+  assert.equal(plan.creates.length, 0); assert.equal(plan.asks.length, 0); assert.equal(plan.gone.length, 0);
+  const dq = plan.updates.find(u => u.id === "dq");
+  assert.deepEqual([dq.refs.goodreadsBookId, dq.relink.sameWork, dq.relink.newPages], ["975465", false, 528]);
+  assert.equal(plan.updates.find(u => u.id === "fiesta").relink.sameWork, true);
+});
+
+test("editions: while the old edition is still on the shelves, a lookalike is asked about, not merged", () => {
+  const books = [{ ...gr("w", "want", "to-read"), refs: { goodreadsBookId: "66933", goodreadsWorkId: "865773" }, synced: { title: "The Wretched of the Earth", author: "Frantz Fanon", shelf: "to-read", source: "goodreads-helper" } }];
+  const plan = planImport(books, [inc("w", "to-read", { goodreadsBookId: "66933" }), { goodreadsBookId: "539813", workId: "865773", title: "The Wretched of the Earth", author: "Frantz Fanon", shelf: "to-read" }], { now: NOW });
+  assert.equal(plan.relinks.length, 0); assert.equal(plan.asks.length, 1);
+});
+
+test("editions: the edition you chose is matched when Goodreads catches up, and isn't flagged gone", () => {
+  const b = { ...gr("w", "want", "to-read"), refs: { goodreadsBookId: "66933", goodreadsWorkId: "865773" }, mine: { grEdition: { id: "539813", pages: 316, coverUrl: "c.jpg", binding: "Paperback" } } };
+  const plan = planImport([b], [{ goodreadsBookId: "539813", workId: "865773", title: "The Wretched of the Earth", author: "Frantz Fanon", shelf: "to-read" }], { now: NOW });
+  assert.equal(plan.updates[0].refs.goodreadsBookId, "539813");
+  assert.equal(plan.gone.length, 0); assert.equal(plan.creates.length, 0);
+});
+
+test("editions: what you chose shows (pages, cover, binding), and Goodreads is asked to switch", async () => {
+  const { effective } = await import("../app/js/domain.js");
+  const b = { ...gr("w", "want", "to-read"), refs: { goodreadsBookId: "66933", goodreadsWorkId: "865773" }, synced: { title: "W", shelf: "to-read", pages: 251, coverUrl: "old.jpg", source: "goodreads-helper" }, mine: { grEdition: { id: "539813", pages: 316, coverUrl: "new.jpg", binding: "Paperback", publisher: "Grove Press" } } };
+  const e = effective(b);
+  assert.deepEqual([e.pages, e.coverUrl, e.edition, e.publisher], [316, "new.jpg", "Paperback", "Grove Press"]);
+  assert.deepEqual(changesForGoodreads([b]).map(x => [x.kind, x.to]), [["edition", "539813"]]);
+  const coverOnly = { ...b, mine: { grEdition: { id: "539813", coverUrl: "new.jpg", coverOnly: true } } };
+  assert.deepEqual([effective(coverOnly).pages, effective(coverOnly).coverUrl], [251, "new.jpg"]);
+  assert.equal(changesForGoodreads([coverOnly]).length, 0);
+});
+
+test("a Goodreads link or number gives the book number", async () => {
+  const { bookIdFrom } = await import("../app/js/goodreads.js");
+  assert.equal(bookIdFrom("https://www.goodreads.com/book/show/539813.The_Wretched_of_the_Earth"), "539813");
+  assert.equal(bookIdFrom("https://www.goodreads.com/book/show/210451639-tolerance-is-a-wasteland"), "210451639");
+  assert.equal(bookIdFrom(" 975465 "), "975465");
+  assert.equal(bookIdFrom("not a link"), null);
+});
+
+test("repair: a book added with no history that is really a new edition of one you have is merged into it", () => {
+  const old = { ...gr("dq", "reading", "currently-reading"), createdAt: "2026-11-01", refs: { goodreadsBookId: "3836", goodreadsWorkId: "121842" }, synced: { title: "Don Quixote", author: "Miguel de Cervantes Saavedra", shelf: "currently-reading", pages: 1023, source: "goodreads-helper" }, flags: { goneFromGoodreads: NOW } };
+  const dup = { ...gr("dq2", "reading", "currently-reading"), createdAt: "2026-11-19", refs: { goodreadsBookId: "975465", goodreadsWorkId: "90895262" }, synced: { title: "Don Quixote, Part One", author: "Miguel de Cervantes Saavedra", shelf: "currently-reading", pages: 528, source: "goodreads-helper" } };
+  const plan = planImport([old, dup], [{ goodreadsBookId: "975465", workId: "90895262", title: "Don Quixote, Part One", author: "Miguel de Cervantes Saavedra", shelf: "currently-reading", pages: 528 }],
+    { now: NOW, source: "goodreads-helper", hasHistory: id => id === "dq" });
+  assert.deepEqual(plan.merges, [{ keep: "dq", drop: "dq2" }]);
+  const u = plan.updates.find(x => x.id === "dq");
+  assert.equal(u.refs.goodreadsBookId, "975465");
+  assert.ok(plan.back.includes("dq") && !plan.gone.includes("dq") && !plan.updates.some(x => x.id === "dq2"));
+  const careful = planImport([old, dup], [{ goodreadsBookId: "975465", workId: "90895262", title: "Don Quixote, Part One", author: "Miguel de Cervantes Saavedra", shelf: "currently-reading" }],
+    { now: NOW, source: "goodreads-helper", hasHistory: () => true });
+  assert.equal(careful.merges.length, 0, "a book you've read in is never merged away");
+});

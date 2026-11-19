@@ -33,17 +33,20 @@ const pick = (mine, synced, key) => (mine && key in mine ? mine[key] : synced ? 
 /** The values the app shows: your override, else synced, else empty. */
 export function effective(book) {
   const m = book.mine || {}, s = book.synced || {};
+  // An edition you chose from Goodreads (mine.grEdition) stands between your own corrections and the synced facts.
+  const ge = m.grEdition && !m.grEdition.coverOnly ? m.grEdition : null;
   return {
     title: pick(m, s, "title") || "Untitled",
     author: pick(m, s, "author") || "",
-    pages: pick(m, s, "pages"),
+    pages: "pages" in m ? m.pages : (ge && ge.pages) || s.pages || null,
     year: pick(m, s, "year"),
-    edition: pick(m, s, "edition") ?? s.binding ?? null,
-    coverUrl: s.coverUrl || null,
+    edition: ("edition" in m ? m.edition : null) ?? (ge && ge.binding) ?? s.binding ?? null,
+    publisher: (ge && ge.publisher) || s.publisher || null,
+    coverUrl: m.coverUrl || (m.grEdition && m.grEdition.coverUrl) || s.coverUrl || null,
     // "" in mine.annotation means deliberately blank; absent means use the synced quote
     annotation: "annotation" in m ? m.annotation : s.quote ?? "",
     annotationIsMine: "annotation" in m,
-    pagesEstimated: !("pages" in m) && !s.pages,
+    pagesEstimated: !("pages" in m) && !(ge && ge.pages) && !s.pages,
   };
 }
 
@@ -215,9 +218,31 @@ const SAME_FACTS = (a, b) => {
  * Plan an import of incoming Goodreads facts against the library.
  * Never overwrites `mine`, never deletes. Returns what would change.
  */
-export function planImport(books, incoming, { now, source = "goodreads-csv", shelves = IMPORT_SHELVES } = {}) {
-  const plan = { creates: [], updates: [], asks: [], gone: [], back: [], adopt: [], skipped: {}, unchanged: 0 };
+export function planImport(books, incoming, { now, source = "goodreads-csv", shelves = IMPORT_SHELVES, hasHistory = null } = {}) {
+  const plan = { creates: [], updates: [], asks: [], gone: [], back: [], adopt: [], relinks: [], merges: [], skipped: {}, unchanged: 0 };
   const byGr = new Map(books.filter(b => b.refs?.goodreadsBookId).map(b => [b.refs.goodreadsBookId, b]));
+  for (const b of books) { const id = b.mine?.grEdition?.id; if (id && !byGr.has(id)) byGr.set(id, b); } // the edition you chose, once Goodreads has it
+  const incomingIds = new Set(incoming.filter(i => shelves.includes(i.shelf)).map(i => i.goodreadsBookId));
+  const relinked = new Set();
+  /** The book's old Goodreads edition has left the shelves: an incoming lookalike is the same book in another edition. */
+  const relink = (book, inc, sameWork) => {
+    if (!book || relinked.has(book.id) || !book.refs?.goodreadsBookId || incomingIds.has(book.refs.goodreadsBookId)) return false;
+    relinked.add(book.id);
+    const synced = { ...syncedFrom(inc, source, now) };
+    const refs = { ...book.refs, goodreadsBookId: inc.goodreadsBookId, goodreadsWorkId: inc.workId || (sameWork ? book.refs.goodreadsWorkId : null) || null, isbn13: inc.isbn13 || null };
+    plan.updates.push({ id: book.id, synced, refs, relink: { from: book.refs.goodreadsBookId, to: inc.goodreadsBookId, sameWork, oldPages: book.synced?.pages || null, newPages: inc.pages || null, oldTitle: effective(book).title, newTitle: inc.title } });
+    plan.relinks.push(book.id);
+    return true;
+  };
+  const byLoose = (inc) => {
+    // "Don Quixote, Part One" for "Don Quixote": same author, one title begins the other, same shelf as before
+    const t = normTitle(inc.title).replace(/ /g, ""), a = normAuthor(inc.author);
+    return books.find(b => {
+      if (!b.refs?.goodreadsBookId || incomingIds.has(b.refs.goodreadsBookId) || b.synced?.shelf !== inc.shelf) return false;
+      const e = effective(b), u = normTitle(e.title).replace(/ /g, "");
+      return normAuthor(e.author) === a && u.length >= 4 && t.length >= 4 && (t.startsWith(u) || u.startsWith(t));
+    }) || null;
+  };
   const byIsbn = new Map(books.filter(b => b.refs?.isbn13).map(b => [b.refs.isbn13, b]));
   const byWork = new Map(books.filter(b => b.refs?.goodreadsWorkId).map(b => [b.refs.goodreadsWorkId, b]));
   const fuzzyKey = b => { const e = effective(b); return `${normTitle(e.title)}|${normAuthor(e.author)}`; };
@@ -232,6 +257,7 @@ export function planImport(books, incoming, { now, source = "goodreads-csv", she
 
     const existing = byGr.get(inc.goodreadsBookId) || (inc.isbn13 && byIsbn.get(inc.isbn13));
     if (existing) {
+      relinked.add(existing.id); // found on the shelves (perhaps under the edition you chose): not gone
       const synced = { ...existing.synced, ...syncedFrom(inc, source, now) };
       const refs = { ...existing.refs, goodreadsBookId: inc.goodreadsBookId, goodreadsWorkId: inc.workId || existing.refs.goodreadsWorkId || null, isbn13: inc.isbn13 || existing.refs.isbn13 || null };
       if (SAME_FACTS(existing.synced, synced) && JSON.stringify(refs) === JSON.stringify(existing.refs)) plan.unchanged++;
@@ -242,9 +268,10 @@ export function planImport(books, incoming, { now, source = "goodreads-csv", she
       continue;
     }
     const sameWork = inc.workId && byWork.get(inc.workId);
-    if (sameWork) { plan.asks.push({ kind: "edition", incoming: inc, matchId: sameWork.id }); continue; }
+    if (sameWork) { if (!relink(sameWork, inc, true)) plan.asks.push({ kind: "edition", incoming: inc, matchId: sameWork.id }); continue; }
     const fuzzy = byFuzzy.get(`${normTitle(inc.title)}|${normAuthor(inc.author)}`);
-    if (fuzzy) { plan.asks.push({ kind: "same-book", incoming: inc, matchId: fuzzy.id }); continue; }
+    if (fuzzy) { if (!relink(fuzzy, inc, false)) plan.asks.push({ kind: "same-book", incoming: inc, matchId: fuzzy.id }); continue; }
+    if (relink(byLoose(inc), inc, false)) continue;
     wanted.push(inc);
   }
 
@@ -262,10 +289,36 @@ export function planImport(books, incoming, { now, source = "goodreads-csv", she
   });
   wanted.filter(i => i.shelf === "read").forEach(inc => plan.creates.push(bookFromIncoming(inc, null, source, now)));
 
+  // Repair: a book added from Goodreads with no history of its own that is really a new edition of a book
+  // you already had (its old edition gone from the shelves) is merged into that book, which keeps its history.
+  if (hasHistory) {
+    const lookalike = (x, y) => {
+      if (x.refs?.goodreadsWorkId && x.refs.goodreadsWorkId === y.refs?.goodreadsWorkId) return true;
+      const ex = effective(x), ey = effective(y);
+      if (normAuthor(ex.author) !== normAuthor(ey.author)) return false;
+      const a = normTitle(ex.title).replace(/ /g, ""), b = normTitle(ey.title).replace(/ /g, "");
+      return a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a));
+    };
+    for (const x of books) {
+      if (!x.refs?.goodreadsBookId || !incomingIds.has(x.refs.goodreadsBookId) || hasHistory(x.id)) continue;
+      const y = books.find(o => o.id !== x.id && o.refs?.goodreadsBookId && !incomingIds.has(o.refs.goodreadsBookId) && !relinked.has(o.id) && (hasHistory(o.id) || (o.createdAt || "") < (x.createdAt || "")) && lookalike(x, o));
+      if (!y) continue;
+      const upd = plan.updates.find(u => u.id === x.id);
+      const synced = upd ? upd.synced : x.synced, refs = upd ? upd.refs : x.refs;
+      plan.updates = plan.updates.filter(u => u.id !== x.id);
+      plan.adopt = plan.adopt.filter(m => m.id !== x.id);
+      const sameWork = !!(refs.goodreadsWorkId && refs.goodreadsWorkId === y.refs.goodreadsWorkId);
+      plan.updates.push({ id: y.id, synced, refs, relink: { from: y.refs.goodreadsBookId, to: refs.goodreadsBookId, sameWork, oldPages: y.synced?.pages || null, newPages: synced?.pages || null, oldTitle: effective(y).title, newTitle: synced?.title || effective(x).title } });
+      plan.merges.push({ keep: y.id, drop: x.id });
+      relinked.add(y.id);
+      if (y.flags?.goneFromGoodreads) plan.back.push(y.id);
+    }
+  }
+
   // Books that came from Goodreads but are no longer on an imported shelf: flag, never delete.
   for (const b of books) {
     const id = b.refs?.goodreadsBookId;
-    if (!id || seen.has(id)) continue;
+    if (!id || seen.has(id) || relinked.has(b.id)) continue;
     if (!b.flags?.goneFromGoodreads && (b.status === "want" || b.status === "reading")) plan.gone.push(b.id);
     // A finished or set-aside book taken off its shelf there: note that it's on none of the three now.
     else if (b.status !== "want" && b.status !== "reading" && b.synced?.shelf && shelves.includes(b.synced.shelf)) {

@@ -34,3 +34,4 @@ export const keyOf = b => (b.refs?.goodreadsBookId ? `gr:${b.refs.goodreadsBookI
 
 /** Helper shelf records -> the incoming shape planImport expects. */
 export const incomingFromShelves = s => (s.books || []).map(b => ({ ...b }));
+export const edition = id => call(`/edition?id=${encodeURIComponent(id)}`, { timeout: 25000 });

@@ -340,3 +340,8 @@ p.next a.all { color: var(--accent); margin-left: .6rem; white-space: nowrap; }
 }
 @media print { .masthead .tabs { position: static; } }
 ul.hand .todaycol .rest { font-size: .8rem; font-style: italic; }
+.edpanel { margin: .5rem 0; padding: .7rem .8rem; background: var(--panel); border: 1px solid var(--rule); overflow: hidden; }
+.edpanel img { float: right; width: 54px; margin: 0 0 .4rem .8rem; border: 1px solid var(--rule); }
+.edpanel p { margin: .3rem 0; }
+form.edform { margin: .4rem 0; display: flex; gap: .5rem; flex-wrap: wrap; }
+form.edform input { flex: 1 1 14rem; font: inherit; padding: .3rem .4rem; border: 1px solid var(--rule); background: transparent; color: inherit; }

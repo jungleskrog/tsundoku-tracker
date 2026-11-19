@@ -213,10 +213,13 @@ def book_details(session: Session, book_id: str) -> dict:
         raise GoodreadsError(f"book {book_id}: not found in page data")
     work = state.get((book.get("work") or {}).get("__ref", ""), {})
     det, wdet = book.get("details") or {}, work.get("details") or {}
+    author_ref = ((book.get("primaryContributorEdge") or {}).get("node") or {}).get("__ref", "")
+    author = (state.get(author_ref) or {}).get("name")
     pub = wdet.get("publicationTime")
     return {
         "book_id": str(book_id),
         "title": book.get("title"),
+        "author": author,
         "work_id": str(work.get("legacyId")) if work.get("legacyId") else None,
         "pages": det.get("numPages"),
         "format": det.get("format"),

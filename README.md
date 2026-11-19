@@ -4,7 +4,7 @@
 
 It is a web app you can install. Your library stays in your own browser, nothing is sent to a server, and there are no accounts, streaks or badges. An optional helper on a Mac keeps it in step with Goodreads.
 
-**Open it:** <https://jungleskrog.github.io/antilibrary/>
+**Open it:** <https://jungleskrog.github.io/tsundoku-tracker/>
 
 Everyone who opens that address gets their own empty library, kept in their own browser. Nobody else can see it, including whoever hosts the page.
 
@@ -94,8 +94,8 @@ It listens only on `127.0.0.1:8749` and answers only this app.
 
 **You need** a Mac, [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`), Chrome signed in to goodreads.com and, for scores, a Claude API key.
 
-    git clone https://github.com/jungleskrog/antilibrary.git
-    cd antilibrary/helper && ./install.sh     # starts at login; adds the antilibrary-helper command
+    git clone https://github.com/jungleskrog/tsundoku-tracker.git
+    cd tsundoku-tracker/helper && ./install.sh     # starts at login; adds the antilibrary-helper command
     antilibrary-helper status                 # also: start | stop | restart | logs
 
 For scores, add `export ANTHROPIC_API_KEY=…` to `~/.zshrc`, then run `antilibrary-helper restart`. The key stays on your Mac.
@@ -191,7 +191,7 @@ You need Node 22 or later and Chrome. There are no dependencies to install for t
     tests/              unit tests and a made-up Goodreads export
     tools/              the local server and the browser tests
 
-The app was called Antilibrary until version 0.7. Its storage, backup format, helper and web address still use that name internally, so existing libraries and installs keep working.
+The app was called Antilibrary until version 0.7 (and lived at /antilibrary/ until 1.2). Its storage, backup format and helper still use that name internally, so existing libraries keep working.
 
 The code is under the MIT License (`LICENSE`). The typeface is Source Serif 4, under the SIL Open Font License (`app/fonts/OFL.txt`).
 
