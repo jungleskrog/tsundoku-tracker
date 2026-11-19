@@ -27,7 +27,7 @@ from pathlib import Path
 import goodreads as gr
 import scoring
 
-VERSION = "0.6.0"
+VERSION = "1.0.0"
 PORT = int(os.environ.get("ANTILIBRARY_PORT", "8749"))
 ORIGINS = set(os.environ.get("ANTILIBRARY_ORIGINS", "https://jungleskrog.github.io,http://localhost:8731,http://127.0.0.1:8731").split(","))
 DATA = Path(os.environ.get("ANTILIBRARY_DATA", Path.home() / "Library/Application Support/Antilibrary"))

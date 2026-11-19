@@ -1,7 +1,7 @@
 [project]
 name = "antilibrary-helper"
-version = "0.4.0"
-description = "Antilibrary's Mac helper: Goodreads through Chrome's login, quotes, and AI difficulty scores"
+version = "1.0.0"
+description = "Tsundoku Tracker's Mac helper: Goodreads through Chrome's login, quotes, and AI difficulty scores"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=1.8.0",

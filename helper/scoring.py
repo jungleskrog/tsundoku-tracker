@@ -9,6 +9,8 @@ cost estimate the user has accepted in the app.
 from __future__ import annotations
 
 import re
+import os
+import pathlib
 import time
 from typing import Literal
 
@@ -21,6 +23,20 @@ PROMPT_VERSION = 5
 PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6
 # Calibrated guesses until real usage replaces them (see estimate()).
 EST_IN, EST_OUT = 1500, 1400
+
+def reading_taste() -> str:
+    """The reader's own words on when books are good to read, from reading-taste.txt in the
+    data folder (yours, never in the repo). Without one, a neutral example stands in."""
+    path = pathlib.Path(os.environ.get("ANTILIBRARY_DATA", pathlib.Path.home() / "Library/Application Support/Antilibrary")) / "reading-taste.txt"
+    try:
+        words = path.read_text().strip()
+    except OSError:
+        words = ""
+    if words:
+        return f'In the reader\'s own words: "{words}"'
+    return ("For example: books of freedom and first discovery often land early; books that lean on life experience, "
+            "history or a lot of earlier reading tend to come later; a short, inviting book can be the right way into a big subject early on.")
+
 
 SYSTEM = """You estimate how much reading effort a book takes, for a personal reading planner.
 
@@ -46,9 +62,10 @@ content: normally the mean of the four components. You may move it by up to 1 po
 
 words: your best estimate of the total words in the text most English-language readers meet (the usual translation for translated books). Give the basis in one short phrase.
 
-youth (0–100): when in a reading life, from about seventeen onwards, this book is going to be good to read: when it will hit hardest, when the reader will be ready for it, and where it fits in a reading life that builds as it goes. Early books are ways in that give energy and appetite; later books ask more and pay back what came before. Not difficulty, not worth, not when schools set it. The age of the narrator or subject doesn't decide it either way. In the reader's words: "beat generation stuff hits that young and free, but you can also read about patience and maturity at that age, maybe harder more real stuff like Malcolm X comes later... The Fire Next Time would be earlier because it's so good as an intro." Bands: 0–20 late teens, 20–40 early twenties, 40–60 later twenties, 60–80 thirties, 80–100 forty onwards. In youth_reason, say what the book asks of the reader and what it gives.
+youth (0–100): when in a reading life, from about seventeen onwards, this book is going to be good to read: when it will hit hardest, when the reader will be ready for it, and where it fits in a reading life that builds as it goes. Early books are ways in that give energy and appetite; later books ask more and pay back what came before. Not difficulty, not worth, not when schools set it. The age of the narrator or subject doesn't decide it either way. {TASTE} Bands: 0–20 late teens, 20–40 early twenties, 40–60 later twenties, 60–80 thirties, 80–100 forty onwards. In youth_reason, say what the book asks of the reader and what it gives.
 
 If you do not recognise the book with reasonable confidence, set identified to false, give your best estimate from the title, author and year, and set confidence to "low"."""
+SYSTEM = SYSTEM.replace("{TASTE}", reading_taste())
 
 
 class Component(BaseModel):

@@ -511,6 +511,72 @@ function ledgerBlock(reading) {
   </div>`;
 }
 
+// --- Getting started (new libraries) and How it works ------------------------------------
+
+const isInstalled = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+
+/** Note a first-run step as done (only while the checklist is in use). */
+function gsDone(key) {
+  const gs = S.settings.gettingStarted;
+  if (!gs || !gs.show || gs[key]) return null;
+  return { ...S.settings, gettingStarted: { ...gs, [key]: true }, updatedAt: now() };
+}
+
+function gettingStarted() {
+  const gs = S.settings.gettingStarted;
+  if (!gs || !gs.show || gs.dismissed) return "";
+  const steps = [
+    { key: "books", done: S.books.size > 0, title: "Bring in your books",
+      body: html`From Goodreads (the export file, or a bookmark that reads your shelves), or one at a time by hand. Want to Read becomes your list; Read becomes your history.
+        <span class="btns"><a class="button" href="#/import">Import from Goodreads</a> <a class="button quietbtn" href="#/add">Add a book</a></span>` },
+    { key: "effort", done: !!gs.effort, title: "Choose your daily effort",
+      body: html`Reading is counted in tokens: one token is about ${S.settings.minutesPerToken} minutes of focused reading, whatever the book. A hard page costs more tokens than an easy one, so dates stay honest.
+        <form data-form="tokens" class="inline gs-form"><label>Tokens a day <input name="tokens" type="number" min="1" max="100" value="${S.settings.dailyTokens}" inputmode="numeric"></label> <button>Keep it</button>
+        <span class="quiet small">${S.settings.dailyTokens} tokens ≈ ${S.settings.dailyTokens * S.settings.minutesPerToken} minutes</span></form>` },
+    { key: "backup", done: !!(S.auto.handle || S.settings.lastExportAt), title: "Keep a backup",
+      body: html`The library lives in this browser only. In Chrome, choose a file in Dropbox or iCloud Drive and every change is saved to it; elsewhere, save a copy now and then. <a href="#/settings#backup">Set up a backup</a>` },
+    { key: "ordered", done: !!gs.ordered, title: "Put the list in order", need: S.books.size > 0,
+      body: html`Next, Soon and The stacks are stretches of one list. Use <i>Move to…</i>, drag a book, or the keys (<kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Alt</kbd>+arrows). A book can be set to read after another. <a href="#/list">The List</a>` },
+    { key: "installed", done: !!gs.installed || isInstalled(), title: "Install it",
+      body: html`On a Mac in Chrome: <i>⋮ › Cast, save and share › Install page as app</i>, and it appears in Launchpad. On an iPhone in Safari: <i>Share › Add to Home Screen</i>. On Android: <i>⋮ › Install app</i>. It works offline.
+        <button class="link" data-act="gs-installed">Done</button>` },
+  ].filter(x => x.need !== false);
+  const left = steps.filter(x => !x.done).length;
+  if (!left) return html`<section class="gs"><p><b>All set.</b> The pile is in order. <a href="#/about">How it works</a> explains the rest. <button class="link" data-act="gs-hide">Hide this</button></p></section>`;
+  return html`<section class="gs" aria-label="Getting started">
+    <h2 class="sc small">Getting started <span class="quiet">${steps.length - left} of ${steps.length}</span></h2>
+    <ol>${steps.map(x => html`<li class="${x.done ? "done" : ""}"><b>${x.title}</b>${x.done ? html` <span class="quiet small">done</span>` : html`<div class="small">${x.body}</div>`}</li>`)}</ol>
+    <p class="quiet small">On a Mac and on Goodreads? <a href="#/about#helper">The optional helper</a> keeps your shelves in step by itself. · <button class="link" data-act="gs-hide">Hide this</button></p>
+  </section>`;
+}
+
+function viewAbout() {
+  const p = derived().p;
+  return html`
+    <div class="dateline sc"><span>Tsundoku Tracker</span><span>How it works</span></div>
+    <h1>How it works</h1>
+    <section class="about">
+      <h2 class="sc small">The pile</h2>
+      <p>One ordered list of the books you mean to read. <i>Next</i>, <i>Soon</i> and <i>The stacks</i> are stretches of that list, not separate shelves; you choose how many each holds. The Desk shows what's in hand and the next few.</p>
+      <h2 class="sc small">Tokens, difficulty, pages</h2>
+      <p>Effort is counted in tokens: one token is about ${S.settings.minutesPerToken} minutes of focused reading. Each book has a difficulty from 1 to 10 (reading effort, not merit), so a page of an easy novel costs about ${M.tokensPerPage(2, p).toFixed(2)} tokens and a page of dense philosophy about ${M.tokensPerPage(9, p).toFixed(2)}. You set tokens a day; the app works out pages a day for each book in hand, and when each will finish.</p>
+      <p>When you read more than one book at once, each one's share of the day is learned from what you've actually read over the last fortnight. If you're behind, it says so in words; nothing turns red, and there are no streaks or badges.</p>
+      <h2 class="sc small">Logging</h2>
+      <p>On the Desk: <i>+1</i>, <i>+2</i>, <i>+5</i> pages, or type the page you reached. Every entry is kept with its time, so the history, the colophons, the weekly letters and the printed year all come from it. <i>Note in the margin</i> keeps a line at the page you're on.</p>
+      <h2 class="sc small">Reading-youth</h2>
+      <p>Optionally, each book gets a figure from 0 to 100 for when in a reading life it's good to read: ways in early, books that ask more later. It's a suggestion: The List can show your order beside the reading-youth order before anything moves, and your own figure on a book's page always wins.</p>
+      <h2 class="sc small">Goodreads</h2>
+      <p>Your shelves come in from the export file, from a bookmark you click on goodreads.com, or by themselves through the Mac helper. Goodreads has no way in for apps, so changes go back by hand: <i>For Goodreads</i> on the Desk lists what to change there, with links.</p>
+      <h2 class="sc small" id="helper">The Mac helper (optional)</h2>
+      <p>A small program on your own Mac that reads your Goodreads shelves through Chrome's existing sign-in, fetches covers and each book's most-liked quote, and (with your own Claude API key) scores difficulty and reading-youth. Scoring is shown with its cost first; a whole library of 180 books costs about ten cents. Setting it up takes a few Terminal commands: see the README.</p>
+      <h2 class="sc small">Your data</h2>
+      <p>Everything lives in this browser, on this device. Keep a backup file in Dropbox or iCloud Drive (Settings) and open the same file on your phone to carry the library across. Nothing is sent to any server; the helper, if you use it, talks only to Goodreads and, for scoring, to the Claude API.</p>
+      <h2 class="sc small">The Library</h2>
+      <p>A wall label for the pile (how much, how heavy, how long), a short letter each week written from what you logged, a colophon for every finished book, your commonplace book, and the printed year: a year of reading set as a small book to print or keep.</p>
+    </section>
+    <p><a href="#/">The Desk</a> · <a href="#/settings">Settings</a></p>`;
+}
+
 function viewDesk() {
   const reading = books().filter(b => b.status === "reading").sort((a, b) => (lastActivity(b.id) > lastActivity(a.id) ? 1 : -1));
   const next = waiting().slice(0, O.bandsOf(S.settings).next);
@@ -519,9 +585,10 @@ function viewDesk() {
     <div class="dateline sc"><span>${longDate(new Date())}</span><span>The Desk</span></div>
     ${empty ? html`<section class="welcome">
       <h1>Nothing piled up yet</h1>
-      <p>Bring in your Goodreads library (My Books › Import and export › Export library, then choose the file here), or add a book by hand.</p>
-      <p><a class="button" href="#/import">Import from Goodreads</a> <a class="button quietbtn" href="#/add">Add a book</a></p>
-    </section>` : html`
+      <p><i>Tsundoku</i> is the Japanese word for buying books and letting them pile up unread. This keeps the pile in order: one list of the books you mean to read, how much effort each takes, and a quiet record of what you read.</p>
+      <p>Your library stays in this browser. Nothing is sent anywhere unless you set up the optional helper. <a href="#/about">How it works</a></p>
+    </section>${gettingStarted()}` : html`
+    ${gettingStarted()}
     <h1>In hand</h1>
     ${reading.length ? reading.map(deskEntry) : html`<p class="quiet">Nothing in hand. Begin something from the list below.</p>`}
     ${ledgerBlock(reading)}
@@ -658,6 +725,9 @@ function pickPanel(b, mode) {
 /** Index (with the moving book taken out) of another waiting book. */
 const restIndex = (id, other) => waiting().filter(b => b.id !== id).findIndex(b => b.id === other);
 
+/** Ordering by hand counts as the "put the list in order" step. */
+const orderedSettings = () => gsDone("ordered");
+
 async function moveBook(id, index) {
   const r = O.moveTo(waiting(), id, index);
   S.listNote = r.blockedBy
@@ -667,7 +737,7 @@ async function moveBook(id, index) {
   const b = S.books.get(id);
   const cur = waiting().findIndex(x => x.id === id);
   if (r.at === cur) return render();
-  await commit({ books: [patchBook(b, { queueKey: r.queueKey }, now())] });
+  await commit({ books: [patchBook(b, { queueKey: r.queueKey }, now())], settings: orderedSettings() });
 }
 
 /** "id reads after other": refuses loops, and moves id down if it's above other. */
@@ -686,7 +756,7 @@ async function addPrereq(id, other) {
     const r = O.moveTo(list, id, cur);
     if (r.at !== cur) { nb.queueKey = r.queueKey; S.listNote = html`${ital(id)} now reads after ${ital(other)}, so it moved down to just after it.`; }
   }
-  await commit({ books: [nb] });
+  await commit({ books: [nb], settings: orderedSettings() });
 }
 
 /** Accept several suggested pairs at once, then let the order respect them. */
@@ -709,7 +779,7 @@ async function acceptSuggestions(pairs) {
   }
   const changed = [...work.values()].filter(b => b !== S.books.get(b.id));
   S.notice = `${plural(n, "reading order")} accepted${moved ? "; books that read after others moved down to follow them" : ""}.`;
-  await commit({ books: changed });
+  await commit({ books: changed, settings: orderedSettings() });
 }
 
 // --- The youth-order preview ---------------------------------------------------------------
@@ -1178,7 +1248,7 @@ function viewSettings() {
     <div class="dateline sc"><span>${counts}</span><span>Settings</span></div>
     <h1>Settings</h1>
 
-    <section><h2 class="sc small">Keeping your library safe</h2>
+    <section id="backup"><h2 class="sc small">Keeping your library safe</h2>
       <p>Your library lives in this browser. Nothing is sent anywhere.</p>
       ${backup.autoBackupSupported() ? html`
         <p><b>Backup file.</b> ${auto.handle
@@ -1199,7 +1269,7 @@ function viewSettings() {
       <div id="snapshots"><p class="quiet">Loading…</p></div>
     </section>
 
-    <section><h2 class="sc small">Daily effort</h2>
+    <section id="effort"><h2 class="sc small">Daily effort</h2>
       <form data-form="tokens" class="inline">
         <label>Tokens a day <input name="tokens" type="number" min="1" max="100" value="${S.settings.dailyTokens}" inputmode="numeric"></label>
         <button>Save</button></form>
@@ -1228,7 +1298,7 @@ function viewSettings() {
     <section><h2 class="sc small">The Mac helper</h2>${helperBlock()}</section>
 
     <section><h2 class="sc small">Library</h2>
-      <p><a href="#/import">Import from Goodreads</a> · <a href="#/add">Add a book by hand</a></p>
+      <p><a href="#/import">Import from Goodreads</a> · <a href="#/add">Add a book by hand</a> · <a href="#/about">How it works</a>${S.settings.gettingStarted?.dismissed ? html` · <button class="link" data-act="gs-show">Show the getting-started list again</button>` : ""}</p>
       <p class="quiet small">Tsundoku Tracker ${APP_VERSION} · data version ${SCHEMA_VERSION}</p>
     </section>`;
 }
@@ -1248,8 +1318,8 @@ function render() {
   if (S.error) { root.innerHTML = html`<main class="page"><h1>Tsundoku Tracker couldn't open</h1><p>${S.error}</p></main>`; return; }
   if (!S.ready) return;
   const [name, arg] = route();
-  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary, year: () => viewYear(arg) }[name] || viewDesk;
-  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library", year: "library" }[name] || "desk";
+  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary, year: () => viewYear(arg), about: viewAbout }[name] || viewDesk;
+  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library", year: "library", about: "settings" }[name] || "desk";
   const focus = document.activeElement?.id;
   root.innerHTML = html`${nav(active)}<main class="page">${notices()}${view()}</main>`;
   if (S.focusRow && document.getElementById(`row-${S.focusRow}`)) {
@@ -1274,6 +1344,9 @@ async function act(name, d) {
   switch (name) {
     case "dismiss": S.notice = null; return render();
     case "year-print": window.print(); return;
+    case "gs-installed": return commit({ settings: gsDone("installed") || S.settings });
+    case "gs-show": return commit({ settings: { ...S.settings, gettingStarted: { ...(S.settings.gettingStarted || {}), show: true, dismissed: false }, updatedAt: t } });
+    case "gs-hide": return commit({ settings: { ...S.settings, gettingStarted: { ...(S.settings.gettingStarted || {}), dismissed: true }, updatedAt: t } });
     case "year-download": return downloadYear(+d.year);
     case "note-open": S.noteFor = d.id; render(); document.getElementById(`note-${d.id}`)?.focus(); return;
     case "note-close": S.noteFor = null; return render();
@@ -1331,7 +1404,7 @@ async function act(name, d) {
       S.undoOrder = list.map(x => [x.id, x.queueKey]);
       const patches = O.rekey(list, ids);
       S.notice = "Your waiting list is now in reading-youth order. Move anything by hand as you like.";
-      await commit({ books: patches.map(p => patchBook(S.books.get(p.id), { queueKey: p.queueKey }, t)) });
+      await commit({ books: patches.map(p => patchBook(S.books.get(p.id), { queueKey: p.queueKey }, t)), settings: orderedSettings() });
       location.hash = "#/list";
       return;
     }
@@ -1517,8 +1590,8 @@ async function submit(form) {
     }
     case "tokens": {
       const n = Math.max(1, Math.min(100, Math.round(+f.get("tokens") || 10)));
-      S.notice = "Saved.";
-      return commit({ settings: { ...S.settings, dailyTokens: n, updatedAt: t }, events: n !== S.settings.dailyTokens ? [{ id: `e_goal_${Date.now()}`, at: t, type: "goal", dailyTokens: n, source: "app" }] : [] });
+      S.notice = `Saved: ${n} tokens a day, about ${n * S.settings.minutesPerToken} minutes.`;
+      return commit({ settings: { ...(gsDone("effort") || S.settings), dailyTokens: n, updatedAt: t }, events: n !== S.settings.dailyTokens ? [{ id: `e_goal_${Date.now()}`, at: t, type: "goal", dailyTokens: n, source: "app" }] : [] });
     }
   }
 }
@@ -1648,7 +1721,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "0.8.0 (Stage 8: the printed year)";
+export const APP_VERSION = "1.0.0";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

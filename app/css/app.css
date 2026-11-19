@@ -262,3 +262,17 @@ form.note input { flex: 1 1 14rem; font: inherit; font-style: italic; padding: .
   .tomb dt { margin-top: .3rem; }
   .wall-label { padding: 1rem; }
 }
+
+/* Stage 9: getting started, how it works */
+.gs { margin: 0 0 2rem; padding: 1rem 1.2rem; background: var(--panel); border: 1px solid var(--rule); }
+.gs h2 { margin-top: 0; }
+.gs ol { margin: 0; padding-left: 1.3rem; }
+.gs li { margin: 0 0 .9rem; }
+.gs li.done b { font-weight: 400; color: var(--quiet); text-decoration: line-through; text-decoration-color: var(--rule); }
+.gs li .small { margin-top: .2rem; line-height: 1.5; }
+.gs .btns { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: .5rem; }
+.gs-form { margin-top: .5rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.gs-form input { width: 4.5em; }
+.welcome p { line-height: 1.6; }
+.about h2 { margin-top: 1.6rem; }
+.about p { max-width: 36rem; }

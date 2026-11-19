@@ -80,7 +80,10 @@ try {
   if (HELPER) {
     await until("window.__antilibrary.books.size > 0", 20000);
     check(true, `with the helper, the library arrives by itself (${await evaluate("window.__antilibrary.books.size")} books)`);
-  } else check((await text()).includes("Nothing piled up yet"), "first run shows the welcome");
+  } else {
+    check((await text()).includes("Nothing piled up yet"), "first run shows the welcome");
+    check(await evaluate("!!document.querySelector('.gs') && document.querySelector('.gs').innerText.includes('0 of 4')"), "a new library gets the getting-started list");
+  }
   await shot("1-welcome");
   await go(`${BASE}/#/import`);
   await until("!!document.querySelector('input[data-change=csv]')");
@@ -411,6 +414,32 @@ try {
     check(!(await evaluate("document.documentElement.scrollWidth > window.innerWidth + 1")), "the printed year reads on a phone");
     await send("Emulation.clearDeviceMetricsOverride");
     await evaluate("(() => { const f = document.querySelector('form[data-form=reader]'); f.reader.value = ''; f.requestSubmit(); })()"); await sleep(200);
+  }
+
+  // Stage 9: getting started, how it works
+  if (!HELPER) {
+    await go(`${BASE}/#/`); await until("!!document.querySelector('.gs')");
+    let gs = await evaluate("document.querySelector('.gs').innerText");
+    check(/Bring in your books\s*done/.test(gs) && /Put the list in order\s*done/.test(gs), "steps tick themselves as you go (books in, list ordered)");
+    // the earlier run already saved tokens in Settings, which counts; otherwise choose them here
+    if (await evaluate("!!document.querySelector('.gs form[data-form=tokens]')")) {
+      await evaluate("(() => { const f = document.querySelector('.gs form[data-form=tokens]'); f.tokens.value = '12'; f.requestSubmit(); })()"); await sleep(300);
+    }
+    gs = await evaluate("document.querySelector('.gs').innerText");
+    check(/Choose your daily effort\s*done/.test(gs), "choosing a daily effort ticks its step");
+    await click("[data-act=gs-installed]"); await sleep(300);
+    await click("[data-act=export]").catch(() => null);
+    await evaluate("window.__antilibrary.settings.lastExportAt = window.__antilibrary.settings.lastExportAt || new Date().toISOString(); window.__antilibrary.version++");
+    await go(`${BASE}/#/list`); await go(`${BASE}/#/`); await until("!!document.querySelector('.gs')");
+    check((await text()).includes("All set."), "with every step done it says so");
+    await click("[data-act=gs-hide]"); await sleep(300);
+    check(!(await evaluate("!!document.querySelector('.gs')")), "the list can be hidden");
+    await go(`${BASE}/#/settings`); await until("!!document.querySelector('[data-act=gs-show]')");
+    check(true, "and shown again from Settings");
+    await go(`${BASE}/#/about`); await until("document.body.innerText.includes('How it works')");
+    const ab = await text();
+    check(/Tokens, difficulty, pages/.test(ab) && /The Mac helper/.test(ab) && /Your data/.test(ab), "How it works explains the model, the helper and your data");
+    await shot("22-about");
   }
 
   // phone width

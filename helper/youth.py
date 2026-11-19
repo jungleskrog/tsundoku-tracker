@@ -22,6 +22,7 @@ import sys
 import time
 
 import anthropic
+import scoring
 from pydantic import BaseModel, Field
 
 MODEL = "claude-opus-5-5"
@@ -34,7 +35,7 @@ SYSTEM = """You're helping one reader put their whole library in order: the orde
 
 The question for each book is when in that life it is going to be good to read: when it will hit hardest, when the reader will be ready for it, and where it fits in a reading life that builds as it goes. Early books are ways in, and they give energy and appetite; later books ask more of the reader and pay back what came before. It is not a ranking of difficulty or of worth, and it is not about when schools set a book. The age of a book's narrator or subject doesn't decide it either way: a quiet book about patience or a long marriage can be good to read young; a book with a teenage narrator can need an adult reader.
 
-In the reader's own words: "ordered by what time in your life that book is going to be good to read, like beat generation stuff hits that young and free, but you can also read about patience and maturity at that age, maybe harder more real stuff like Malcolm X comes later... The Fire Next Time would be earlier because it's so good as an intro."
+{TASTE}
 
 Work through the books one at a time, and for each one first write a short note on what it asks of the reader (background, earlier books, emotional weight, life experience it genuinely depends on) and what it gives at different points in a life. Then place it:
 - stage, 1 to 5: 1 = opening out (late teens, first freedom); 2 = finding your feet (early twenties); 3 = taking on weight (later twenties); 4 = deepening (thirties); 5 = the long view (forty onwards).
@@ -43,6 +44,7 @@ Work through the books one at a time, and for each one first write a short note 
 - any_time: true only for reference and picture books not meant to be read through. Every novel, poem, essay or argument gets a place.
 
 Think about the list as a whole: compare books with each other, and make sure each stage holds the books that truly belong there. Cover every book exactly once, by its number."""
+SYSTEM = SYSTEM.replace("{TASTE}", scoring.reading_taste())
 
 
 class Placing(BaseModel):

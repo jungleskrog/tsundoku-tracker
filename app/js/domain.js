@@ -21,6 +21,7 @@ export function defaultSettings(now) {
     readingDays: [1, 1, 1, 1, 1, 1, 1],
     goodreadsUserId: null,
     lastExportAt: null,
+    gettingStarted: { show: true },   // new libraries only: the first-run checklist on the Desk
     updatedAt: now,
   };
 }
