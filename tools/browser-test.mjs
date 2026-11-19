@@ -376,6 +376,43 @@ try {
     await send("Emulation.clearDeviceMetricsOverride");
   }
 
+  // Stage 8: the printed year
+  {
+    await go(`${BASE}/#/library`); await until("!!document.querySelector('a[href=\"#/year\"]')");
+    await click('a[href="#/year"]'); await until("!!document.querySelector('.year .y-title')");
+    const yt = await text();
+    check(/A Reading Year/.test(yt) && /The year in figures/.test(yt) && /Colophon/.test(yt), "the printed year has a title page, figures and a colophon");
+    const nBooks = await evaluate("document.querySelectorAll('.y-book').length");
+    check(nBooks > 0 && /No\. 1/.test(yt), `the year's finished books are numbered (${nBooks})`);
+    await evaluate("(() => { const f = document.querySelector('form[data-form=reader]'); f.reader.value = 'A Reader'; f.requestSubmit(); })()"); await sleep(300);
+    check((await text()).includes("The Reading Year of A Reader"), "the reader's name goes on the title page");
+    const pdf = await send("Page.printToPDF", { preferCSSPageSize: true, printBackground: true });
+    const bytes = Buffer.from(pdf.result.data, "base64");
+    const pages = (bytes.toString("latin1").match(/\/Type\s*\/Page[^s]/g) || []).length;
+    check(pages >= 4, `printing sets it as a small book (${pages} A5 pages)`);
+    const mb = bytes.toString("latin1").match(/\/MediaBox\s*\[\s*0 0 ([\d.]+) ([\d.]+)/);
+    check(mb && Math.abs(+mb[1] - 419.5) < 3 && Math.abs(+mb[2] - 595.3) < 3, `the pages are A5 (${mb ? mb[1] + " × " + mb[2] : "?"} pt)`);
+    if (SHOTS) writeFileSync(join(SHOTS, "19-printed-year.pdf"), bytes);
+    // the single-page download
+    const dl = mkdtempSync(join(tmpdir(), "tsundoku-dl-"));
+    await send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dl });
+    await click("[data-act=year-download]");
+    await until("document.body.innerText.includes('to your downloads')", 10000);
+    await sleep(800);
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const files = readdirSync(dl).filter(f => f.endsWith(".html"));
+    const page = files.length ? readFileSync(join(dl, files[0]), "utf8") : "";
+    check(files.length === 1 && page.includes("data:font/woff2;base64,") && page.includes("The Reading Year of A Reader") && !page.includes("#/book/") && !/<script/i.test(page),
+      `the download is one self-contained page (${files[0] || "none"}, ${Math.round(page.length / 1024)} KB)`);
+    if (SHOTS && page) writeFileSync(join(SHOTS, "20-year.html"), page);
+    rmSync(dl, { recursive: true, force: true });
+    await shot("21-year-screen");
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(300);
+    check(!(await evaluate("document.documentElement.scrollWidth > window.innerWidth + 1")), "the printed year reads on a phone");
+    await send("Emulation.clearDeviceMetricsOverride");
+    await evaluate("(() => { const f = document.querySelector('form[data-form=reader]'); f.reader.value = ''; f.requestSubmit(); })()"); await sleep(200);
+  }
+
   // phone width
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await go(`${BASE}/`); await until("window.__antilibrary && window.__antilibrary.ready");

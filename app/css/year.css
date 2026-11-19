@@ -1,0 +1,71 @@
+/* The printed year: a reading year set as a small book.
+   On screen it reads as a column; printed (or saved as PDF) it becomes A5 pages:
+   a title page, contents, then each part on a fresh page, numbered at the foot.
+   The single-page export carries this file inline, so it stands on its own. */
+
+.year { --y-ink: var(--ink, #1E1B18); --y-quiet: var(--quiet, #6B645B); --y-rule: var(--rule, #D6CDBE); --y-accent: var(--accent, #7A1F1F);
+  font-family: "Source Serif 4", Georgia, serif; color: var(--y-ink); line-height: 1.55; font-size: 1.02rem; max-width: 34rem; margin: 0 auto; }
+.year .sc { font-variant: small-caps; letter-spacing: .08em; }
+.year h2.sc { font-weight: 400; font-size: 1.05rem; text-align: center; margin: 0 0 1.6rem; color: var(--y-accent); }
+.year section { padding: 2.4rem 0; border-bottom: 1px solid var(--y-rule); }
+.year section:last-child { border-bottom: 0; }
+.year a { color: inherit; text-decoration-color: var(--y-rule); }
+
+.y-title { text-align: center; padding: 4rem 0 3.5rem !important; }
+.y-title .sc { color: var(--y-quiet); margin: 0 0 2.5rem; }
+.y-title h1 { font-weight: 400; font-style: italic; font-size: 2rem; line-height: 1.2; margin: 0; }
+.y-title .y-num { font-size: 3.2rem; font-weight: 300; letter-spacing: .06em; margin: 1.2rem 0 .4rem; color: var(--y-accent); }
+.y-title .y-sub { color: var(--y-quiet); margin: 0; }
+
+.y-contents ol { list-style: none; padding: 0; margin: 0 auto; max-width: 18rem; counter-reset: part; }
+.y-contents li { counter-increment: part; padding: .25rem 0; border-bottom: 1px dotted var(--y-rule); }
+.y-contents li::before { content: counter(part, upper-roman) "."; display: inline-block; width: 2.4rem; color: var(--y-quiet); }
+
+.y-figures p { margin: 0 0 .7rem; }
+.year .tomb { display: grid; grid-template-columns: 7rem 1fr; gap: .2rem .8rem; margin: 1.4rem auto; max-width: 22rem; font-variant-numeric: tabular-nums; }
+.year .tomb dt { font-variant: small-caps; letter-spacing: .05em; color: var(--y-quiet); }
+.year .tomb dd { margin: 0; }
+.y-months { display: flex; align-items: flex-end; gap: 4px; height: 5.5rem; max-width: 24rem; margin: 1.6rem auto 0; }
+.y-months span { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
+.y-months i { display: block; width: 100%; background: var(--y-accent); opacity: .8; min-height: 1px; }
+.y-months b { font-weight: 400; font-size: .7rem; color: var(--y-quiet); margin-top: 3px; }
+.y-months em { position: absolute; top: -1.1rem; font-style: normal; font-size: .7rem; color: var(--y-quiet); }
+
+.y-book { padding: 1.4rem 0 1.6rem; border-bottom: 1px solid var(--y-rule); break-inside: avoid; }
+.y-book:last-child { border-bottom: 0; }
+.y-book .y-no { color: var(--y-quiet); font-size: .85rem; margin: 0; }
+.y-book h3 { font-weight: 400; font-size: 1.35rem; margin: .1rem 0 0; line-height: 1.25; }
+.y-book .y-by { margin: .1rem 0 .8rem; color: var(--y-quiet); }
+.y-book p { margin: .3rem 0; }
+.year blockquote { margin: .6rem 0 .9rem; padding-left: 1rem; border-left: 2px solid var(--y-accent); font-style: italic; }
+.year .y-src { display: block; font-style: normal; font-size: .82rem; color: var(--y-quiet); margin-top: .2rem; }
+.y-notes { list-style: none; margin: .6rem 0 0; padding: 0; font-style: italic; font-size: .93rem; color: var(--y-accent); }
+.y-notes li { margin: .2rem 0; }
+.y-p { font-style: normal; color: var(--y-quiet); font-size: .8rem; }
+.y-intro { font-style: italic; color: var(--y-quiet); }
+.y-letter { margin: 0 0 1.4rem; break-inside: avoid; }
+.y-letter .y-week { color: var(--y-quiet); font-size: .85rem; margin: 0 0 .3rem; }
+.y-letter p { margin: .25rem 0; }
+.y-colophon { text-align: center; font-size: .9rem; color: var(--y-quiet); }
+.y-colophon p { max-width: 24rem; margin: .5rem auto; }
+
+/* Tools above the document (screen only) */
+.yeartools { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin: 0 0 1.5rem; }
+.yeartools select, .yeartools input { font: inherit; padding: .3rem .4rem; border: 1px solid var(--rule); background: var(--panel); color: inherit; }
+.yeartools input { width: 12rem; }
+
+@media print {
+  @page { size: A5; margin: 17mm 15mm 19mm; @bottom-center { content: counter(page); font-family: "Source Serif 4", Georgia, serif; font-size: 8.5pt; color: #6B645B; } }
+  @page :first { @bottom-center { content: none; } }
+  html, body { background: #fff !important; }
+  .page { max-width: none !important; padding: 0 !important; margin: 0 !important; }
+  .yeartools, .dateline { display: none !important; }
+  .year { --y-ink: #1E1B18; --y-quiet: #6B645B; --y-rule: #D6CDBE; --y-accent: #7A1F1F; font-size: 10pt; max-width: none; }
+  .year a { text-decoration: none; }
+  .year section { border-bottom: 0; padding: 0; break-before: page; }
+  .year section:first-child { break-before: auto; }
+  .y-title { min-height: 150mm; display: flex; flex-direction: column; justify-content: center; padding: 0 !important; }
+  .y-books, .y-letters { break-before: page; }
+  .y-book h3 { break-after: avoid; }
+  .year h2.sc { margin-bottom: 8mm; }
+}

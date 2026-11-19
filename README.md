@@ -24,6 +24,8 @@ No build step and no dependencies: plain ES modules in `app/`.
       js/store.js   IndexedDB
       js/backup.js  backup files (auto-saved file in Chrome)
       js/order.js   the waiting list: bands, moves, read-after, reading-youth
+      js/year.js       the printed year: data and the whole document
+      css/year.css     its screen, print (A5) and export styles
       js/library.js    colophons, the wall label, shelf letters, the commonplace book
       js/goodreads.js  the round trip: what to change on Goodreads, the bookmark's data
       bookmarklet.js   "Antilibrary: read my shelves" (Import page makes the bookmark)
@@ -72,3 +74,12 @@ A book that moved shelf on Goodreads moves here too, if you hadn't changed it he
 - **Commonplace book.** Your own lines (an annotation you've written yourself) and margin notes, by year. Goodreads quotes aren't yours, so they stay out.
 
 The app was called Antilibrary until version 0.7. Its storage, backup files and helper still use that name inside, so nothing needed moving.
+
+## The printed year
+
+The Library › *The printed year* sets a year of reading as a small book: a title page (with your name, if you add one), contents, the year in figures with a month-by-month chart, every finished book numbered with its line and colophon and margin notes, books set aside, the commonplace book, the year's shelf letters and a colophon.
+
+- **Print or save as PDF**: A5 pages, each part on a fresh page, numbered at the foot. In Chrome's print dialog choose *Save as PDF* and turn off headers and footers.
+- **Download as one page**: a single self-contained HTML file with its own styles and the typeface inside (about 340 KB). It opens offline, in any browser, and follows light or dark mode.
+
+Books read before the app carry the dates Goodreads recorded; hours and sittings count only what was logged here.

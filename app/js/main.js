@@ -14,6 +14,7 @@ import { keysBetween, compareKeys } from "./keys.js";
 import * as O from "./order.js";
 import * as G from "./goodreads.js";
 import * as L from "./library.js";
+import * as Y from "./year.js";
 import { eventId } from "./ids.js";
 import { html, raw, esc, longDate, shortDate, relativeDay, plural } from "./format.js";
 
@@ -899,6 +900,57 @@ function markLetterSeen() {
   store.setMeta("letterSeen", last).catch(() => {});
 }
 
+// --- The printed year -------------------------------------------------------------------
+
+function yearDoc(year, links = true) {
+  const y = Y.yearData({ books: books(), byBook: S.byBook, p: derived().p, year });
+  return { y, html: Y.yearHtml(y, { reader: S.settings.readerName || "", links }) };
+}
+
+function viewYear(arg) {
+  const years = Y.readingYears(S.events);
+  const year = +arg || years.find(y => Y.yearData({ books: books(), byBook: S.byBook, p: derived().p, year: y }).finished.length) || years[0];
+  const { html: doc } = yearDoc(year);
+  return html`
+    <div class="dateline sc"><span>${year}</span><a href="#/library">The Library</a></div>
+    <div class="yeartools">
+      <label>Year <select data-change="year">${years.map(y => html`<option value="${y}" ${y === year ? raw("selected") : ""}>${y}</option>`)}</select></label>
+      <form data-form="reader" class="inline"><label>Name on the title page <input name="reader" value="${S.settings.readerName || ""}" placeholder="optional" maxlength="60" autocomplete="off"></label> <button>Save</button></form>
+      <button data-act="year-print" data-year="${year}">Print or save as PDF</button>
+      <button class="quietbtn" data-act="year-download" data-year="${year}">Download as one page</button>
+    </div>
+    <p class="quiet small yeartools">Printing sets it as a small book (A5 pages, numbered). In the print dialog choose <i>Save as PDF</i> to keep it as a file; turn off headers and footers for a clean page.</p>
+    ${raw(doc)}`;
+}
+
+/** The year as one self-contained HTML file: its own styles and the typeface inside it. */
+async function downloadYear(year) {
+  const { html: doc } = yearDoc(year, false);
+  const css = await (await fetch("css/year.css")).text();
+  const font = async (file, style) => {
+    const buf = new Uint8Array(await (await fetch(`fonts/${file}`)).arrayBuffer());
+    let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return `@font-face{font-family:'Source Serif 4';font-style:${style};font-weight:200 900;src:url(data:font/woff2;base64,${btoa(bin)}) format('woff2');}`;
+  };
+  const fonts = (await font("source-serif-4-normal-latin.woff2", "normal")) + (await font("source-serif-4-italic-latin.woff2", "italic"));
+  const name = S.settings.readerName ? `The Reading Year of ${S.settings.readerName}` : "A Reading Year";
+  const page = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(name)} — ${year}</title>
+<style>${fonts}
+:root { --ink: #1E1B18; --quiet: #6B645B; --rule: #D6CDBE; --accent: #7A1F1F; --paper: #F4EFE6; }
+@media (prefers-color-scheme: dark) { :root { --ink: #ECE5D8; --quiet: #A39A8C; --rule: #3A352E; --accent: #CF7A70; --paper: #1B1916; } }
+html { background: var(--paper); } body { margin: 0; padding: 24px 16px 64px; }
+${css}</style></head>
+<body>${doc}</body></html>`;
+  const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: `${name} ${year}.html` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  S.notice = `Saved “${name} ${year}.html” to your downloads: one page, readable offline, with its typeface inside.`;
+  render();
+}
+
 function viewLibrary() {
   const ls = letters();
   const years = L.commonplace(books(), S.byBook);
@@ -906,6 +958,7 @@ function viewLibrary() {
   return html`
     <div class="dateline sc"><span>${plural(S.books.size, "volume")}</span><span>The Library</span></div>
     <h1>The Library</h1>
+    <p><a class="button quietbtn" href="#/year">The printed year</a> <span class="quiet small">a reading year set as a small book, to print, save as PDF, or keep as one page</span></p>
     <section><h2 class="sc small">Wall label</h2>${wallLabelBlock()}</section>
     <section id="letters"><h2 class="sc small">Shelf letters</h2>
       <p class="quiet small">Written each week from what you logged: no AI, nothing sent anywhere.</p>
@@ -1195,8 +1248,8 @@ function render() {
   if (S.error) { root.innerHTML = html`<main class="page"><h1>Tsundoku Tracker couldn't open</h1><p>${S.error}</p></main>`; return; }
   if (!S.ready) return;
   const [name, arg] = route();
-  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary }[name] || viewDesk;
-  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library" }[name] || "desk";
+  const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary, year: () => viewYear(arg) }[name] || viewDesk;
+  const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library", year: "library" }[name] || "desk";
   const focus = document.activeElement?.id;
   root.innerHTML = html`${nav(active)}<main class="page">${notices()}${view()}</main>`;
   if (S.focusRow && document.getElementById(`row-${S.focusRow}`)) {
@@ -1220,6 +1273,8 @@ async function act(name, d) {
   const b = d.id ? S.books.get(d.id) : null;
   switch (name) {
     case "dismiss": S.notice = null; return render();
+    case "year-print": window.print(); return;
+    case "year-download": return downloadYear(+d.year);
     case "note-open": S.noteFor = d.id; render(); document.getElementById(`note-${d.id}`)?.focus(); return;
     case "note-close": S.noteFor = null; return render();
     case "note-del": return commit({ removeEvents: [d.ev] });
@@ -1396,6 +1451,11 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "reader": {
+      const name = (f.get("reader") || "").trim().slice(0, 60);
+      S.notice = name ? `The title page now reads “The Reading Year of ${name}”.` : "The title page has no name.";
+      return commit({ settings: { ...S.settings, readerName: name || null, updatedAt: t } });
+    }
     case "note": {
       const text = (f.get("text") || "").trim();
       S.noteFor = null;
@@ -1467,6 +1527,7 @@ async function change(el) {
   const kind = el.dataset.change;
   if (kind === "ask") { S.plan.asks[+el.dataset.i].choice = el.value; return; }
   if (kind === "autoscore") return; // saved with its form
+  if (kind === "year") { location.hash = `#/year/${el.value}`; return; }
   const file = el.files?.[0];
   if (!file) return;
   try {
@@ -1587,7 +1648,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "0.7.0 (Stage 7: the library)";
+export const APP_VERSION = "0.8.0 (Stage 8: the printed year)";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
