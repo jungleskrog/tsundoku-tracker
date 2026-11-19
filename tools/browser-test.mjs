@@ -478,12 +478,12 @@ try {
       if (wid) {
         await go(`${BASE}/#/book/${wid}`); await until("!!document.querySelector('[data-act=ed-open]')");
         await click("[data-act=ed-open]"); await until("!!document.getElementById('ed-q')");
-        await evaluate("(() => { const f = document.querySelector('form[data-form=edition-look]'); f.q.value = 'https://www.goodreads.com/book/show/539813.The_Wretched_of_the_Earth'; f.requestSubmit(); })()");
+        await evaluate("(() => { const f = document.querySelector('form[data-form=edition-look]'); f.q.value = 'https://www.goodreads.com/book/show/66933'; f.requestSubmit(); })()");
         await until("!!document.querySelector('[data-act=ed-use][data-mode=edition]')", 30000);
-        check((await text()).includes("Grove Press"), "pasting a Goodreads link looks the edition up");
+        check(/pages/.test(await evaluate("document.querySelector('.edpanel').innerText")), "pasting a Goodreads link looks the edition up");
         await click("[data-act=ed-use][data-mode=edition]"); await sleep(400);
         const b = await evaluate(`${A}.books.get('${wid}').mine.grEdition`);
-        check(b && b.id === "539813" && (await text()).includes("(your choice)"), "the chosen edition is used (cover, pages, publisher)");
+        check(b && b.id === "66933" && (await text()).includes("(your choice)"), "the chosen edition is used (cover, pages, publisher)");
         await evaluate(`(() => { const b = ${A}.books.get('${wid}'); b.flags = { ...b.flags, goneFromGoodreads: null }; ${A}.version++; })()`); // an earlier test import flagged it
         await go(`${BASE}/#/goodreads`); await until("document.querySelector('h1') && document.querySelector('h1').textContent === 'For Goodreads'");
         const gtxt = await text();
@@ -493,6 +493,22 @@ try {
         check(!(await evaluate(`!!${A}.books.get('${wid}').mine.grEdition`)), "and you can go back to the Goodreads edition");
       }
     }
+  }
+
+  // 1.2.1: set your place without counting it; the Desk's two columns
+  if (!HELPER) {
+    const A = "window.__antilibrary";
+    const rid = await evaluate(`([...${A}.books.values()].find(b => b.status === 'reading' || b.status === 'want') || {}).id`);
+    await go(`${BASE}/#/book/${rid}`); await until("!!document.querySelector('form[data-form=place]')");
+    const tokensBefore = await evaluate(`(${A}.events.filter(e => e.type === 'progress' && e.source === 'app').length)`);
+    await evaluate("(() => { const f = document.querySelector('form[data-form=place]'); f.page.value = '40'; f.requestSubmit(); })()"); await sleep(300);
+    const cur = await evaluate(`(() => { let p = 0; for (const e of ${A}.byBook.get('${rid}') || []) if (e.type === 'progress') p = e.page; return p; })()`);
+    check(cur === 40 && (await evaluate(`(${A}.events.filter(e => e.type === 'progress' && e.source === 'app').length)`)) === tokensBefore, "setting your place moves it without counting as reading");
+    await go(`${BASE}/#/`); await until("!!document.querySelector('.figs')");
+    const cols = await evaluate("(() => { const li = document.querySelector('ul.hand li.entry'); if (!li) return null; const a = li.querySelector('.who').getBoundingClientRect(), b = li.querySelector('.btns').getBoundingClientRect(); return { side: b.left > a.right, w: Math.round(document.querySelector('main').getBoundingClientRect().width) }; })()");
+    check(!cols || (cols.side && cols.w >= 700), `the Desk is wide, with book and controls side by side (${cols ? cols.w + "px" : "nothing in hand"})`);
+    const pt = await evaluate(`document.querySelector('.entry[data-id="${rid}"] .todaycol') ? document.querySelector('.entry[data-id="${rid}"] .todaycol').textContent : ''`);
+    check(!/^\s*40\b/.test(pt), "and today's pages don't include it");
   }
 
   // phone width

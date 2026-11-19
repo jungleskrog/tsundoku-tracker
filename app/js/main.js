@@ -579,7 +579,7 @@ function notices() {
 
 function pagesToday(bookId) {
   const today = localDayKey(now());
-  return evs(bookId).filter(e => e.type === "progress" && localDayKey(e.at) === today).reduce((n, e) => n + (e.page - e.prevPage), 0);
+  return evs(bookId).filter(e => e.type === "progress" && e.source === "app" && localDayKey(e.at) === today).reduce((n, e) => n + (e.page - e.prevPage), 0);
 }
 
 function lastActivity(bookId) {
@@ -1220,6 +1220,7 @@ const STATUS_LABEL = { want: "Waiting", reading: "In hand", paused: "Paused", re
 
 function describe(e) {
   if (e.type === "progress" && e.source === "edition") return `Edition changed: p. ${e.prevPage} → ${e.page}`;
+  if (e.type === "progress" && e.source === "place") return `Place set: p. ${e.prevPage} → ${e.page}`;
   if (e.type === "progress") return e.prevPage === 0 && e.source !== "app" ? `p. ${e.page}` : `p. ${e.prevPage} → ${e.page}`;
   if (e.type === "status") {
     if (e.from == null) return "Added to the list";
@@ -1267,6 +1268,10 @@ function viewBook(id) {
           ${grItem(b) ? html`<br><span class="small">${grWords(b, grItem(b))} <button class="link" data-act="gr-done" data-id="${id}">Done</button></span>` : ""}</dd>` : ""}
       </dl>
       <p class="actions">${actions.map(([to, label]) => html`<button data-act="status" data-id="${id}" data-to="${to}">${label}</button>`)}</p>
+      ${["want", "reading", "paused"].includes(b.status) ? html`<form class="inline placeform" data-form="place" data-id="${id}">
+        <label>Where you are <input name="page" type="number" min="0" ${e.pages ? raw(`max="${e.pages}"`) : ""} inputmode="numeric" value="${page || ""}" placeholder="page"></label>
+        <button>Set my place</button>
+        <span class="quiet small">For pages read before, or elsewhere: it moves your place without counting as today's reading.</span></form>` : ""}
       ${whyBlock(b)}
       ${b.flags?.goneFromGoodreads ? html`<p class="notice quiet">This book is no longer on your Goodreads Want to Read or Currently Reading shelves (noticed ${shortDate(b.flags.goneFromGoodreads)}). It stays here until you decide.
         <button class="link" data-act="clear-flag" data-id="${id}">Keep it</button></p>` : ""}
@@ -1543,6 +1548,7 @@ function render() {
   const view = { desk: viewDesk, list: viewList, order: viewOrder, book: () => viewBook(arg), add: viewAdd, import: viewImport, settings: viewSettings, goodreads: viewGoodreads, library: viewLibrary, year: () => viewYear(arg), about: viewAbout }[name] || viewDesk;
   const active = { desk: "desk", list: "list", order: "list", book: "list", add: "list", import: "settings", settings: "settings", goodreads: "desk", library: "library", year: "library", about: "settings" }[name] || "desk";
   const focus = document.activeElement?.id;
+  document.documentElement.dataset.view = name in { desk: 1, list: 1, book: 1, order: 1, library: 1, year: 1, settings: 1, goodreads: 1, import: 1, add: 1, about: 1 } ? name : "desk";
   root.innerHTML = html`${nav(active)}<main class="page">${notices()}${view()}</main>`;
   if (S.focusRow && document.getElementById(`row-${S.focusRow}`)) {
     const el = document.getElementById(`row-${S.focusRow}`);
@@ -1769,6 +1775,17 @@ async function submit(form) {
       return;
     }
     case "search": S.query = f.get("q") || ""; return render();
+    case "place": {
+      const v = f.get("page"), cur = currentPage(evs(b.id)), pages = effective(b).pages;
+      if (v === "" || isNaN(+v)) return;
+      const to = Math.max(0, Math.min(Math.round(+v), pages || Infinity));
+      if (to === cur) return;
+      const events = [{ id: eventId(), bookId: b.id, at: t, type: "progress", page: to, prevPage: cur, source: "place" }];
+      const patch = b.status === "want" && to > 0 ? { status: "reading" } : null;
+      if (patch) events.push({ id: eventId(), bookId: b.id, at: t, type: "status", from: b.status, to: "reading", source: "app" });
+      S.notice = `Your place in ${effective(b).title}: p. ${to}${pages ? ` of ${pages}` : ""}. Not counted as today's reading.`;
+      return commit({ events, books: patch ? [patchBook(b, patch, t)] : [] });
+    }
     case "edition-look": {
       const gid = G.bookIdFrom(f.get("q"));
       if (!gid) { S.notice = "Paste a Goodreads book link (…/book/show/975465…) or its number."; return render(); }
@@ -1979,7 +1996,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.2.0";
+export const APP_VERSION = "1.2.1";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;

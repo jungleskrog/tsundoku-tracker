@@ -332,6 +332,8 @@ p.next a.all { color: var(--accent); margin-left: .6rem; white-space: nowrap; }
   .figs { grid-template-columns: repeat(2, 1fr); }
   .figs > div:nth-child(3) { border-left: 0; padding-left: 0; }
   .figs > div:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+}
+@media (max-width: 560px) {
   ul.hand li.entry { grid-template-columns: 32px minmax(0, 1fr) auto; grid-template-areas: "cover who today" "cover prog prog" "btns btns btns" "more more more"; }
   ul.hand .btns { justify-content: flex-end; margin-top: 6px; }
   ul.hand .btns button { min-width: 46px; min-height: 44px; }
@@ -345,3 +347,9 @@ ul.hand .todaycol .rest { font-size: .8rem; font-style: italic; }
 .edpanel p { margin: .3rem 0; }
 form.edform { margin: .4rem 0; display: flex; gap: .5rem; flex-wrap: wrap; }
 form.edform input { flex: 1 1 14rem; font: inherit; padding: .3rem .4rem; border: 1px solid var(--rule); background: transparent; color: inherit; }
+
+/* 1.2.1: the Desk at the mockup's width, its rows in two columns until a phone */
+html[data-view="desk"] { --measure: 48rem; }
+form.placeform { margin: .4rem 0 1rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+form.placeform input { width: 5em; }
+form.placeform .quiet { flex-basis: 100%; }
