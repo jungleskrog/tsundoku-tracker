@@ -83,3 +83,9 @@ export function driveStore(access, hint = {}) {
     },
   };
 }
+
+/** The Google account's address (for renewing silently with the right account when several are signed in). */
+export async function whoAmI(access) {
+  try { const r = await call(`https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)`, access); return (await r.json()).user?.emailAddress || null; }
+  catch { return null; }
+}

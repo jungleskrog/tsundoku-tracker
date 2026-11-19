@@ -237,7 +237,7 @@ async function syncNow() {
 /** Off to Google's sign-in page and back. silent: no screens (used to renew). */
 async function goToGoogle(silent) {
   if (!clientId()) { S.notice = "Google Drive sync isn't set up for this copy of the app yet (see the README)."; return render(); }
-  const { url, state } = GD.signInUrl(clientId(), appBase(), { silent });
+  const { url, state } = GD.signInUrl(clientId(), appBase(), { silent, hint: S.sync.rec?.hint || null });
   await store.setMeta("gdrivePending", { state, back: location.hash || "#/", silent, at: Date.now() });
   location.href = url;
 }
@@ -251,13 +251,16 @@ async function googleReturn() {
   history.replaceState(null, "", appBase() + (pending?.back || "#/"));
   if (!pending || pending.state !== got.state) { S.notice = "That Google sign-in didn't match; try again from Settings."; return true; }
   if (got.error) {
-    if (pending.silent) { S.sync.state = "tap"; await store.setMeta("gdriveSilentFailedAt", Date.now()); }
+    // Google wants a choice (several accounts signed in, say): the next tap goes the visible way
+    if (pending.silent) { S.sync.state = "choose"; await store.setMeta("gdriveSilentFailedAt", Date.now()); }
     else S.notice = got.error === "access_denied" ? "Google Drive access wasn't given." : `Google said: ${got.error}`;
     return true;
   }
   const first = !S.sync.rec?.on;
   S.sync.rec = { ...(S.sync.rec || {}), on: true, access: got.access, expiresAt: got.expiresAt };
+  if (!S.sync.rec.hint) S.sync.rec.hint = await GD.whoAmI(got.access);
   await store.setMeta("gdrive", S.sync.rec);
+  await store.setMeta("gdriveSilentFailedAt", 0);
   if (first) S.notice = "Connected to Google Drive. This device now syncs; connect your other devices too.";
   return true;
 }
@@ -267,6 +270,7 @@ function syncWords() {
   if (!sy.rec?.on) return null;
   if (sy.state === "syncing") return "Syncing…";
   if (sy.state === "tap") return "Tap to sync";
+  if (sy.state === "choose") return "Tap to sync (Google wants you to choose your account)";
   if (sy.state === "offline") return "Offline; will sync when back";
   if (sy.state === "error") return `Sync paused: ${sy.error}`;
   return sy.last ? `Synced ${relativeDay(sy.last).replace(/^today at /, "at ")}` : "Synced";
@@ -842,7 +846,7 @@ function deskFooter() {
   const letter = letterLine();
   if (letter) bits.push(letter);
   if (grCount()) bits.push(html`<a href="#/goodreads">${plural(grCount(), "change")} for Goodreads</a>`);
-  if (S.sync.rec?.on) bits.push(S.sync.state === "tap" ? html`<button class="link warn" data-act="sync-tap">Tap to sync</button>` : html`<a href="#/settings#sync" class="${S.sync.state === "error" ? "warn" : ""}">${syncWords()}</a>`);
+  if (S.sync.rec?.on) bits.push(S.sync.state === "tap" || S.sync.state === "choose" ? html`<button class="link warn" data-act="sync-tap">Tap to sync</button>` : html`<a href="#/settings#sync" class="${S.sync.state === "error" ? "warn" : ""}">${syncWords()}</a>`);
   else if (!S.auto.handle && (!S.settings.lastExportAt || Date.now() - new Date(S.settings.lastExportAt) > 30 * 864e5)) bits.push(html`<a href="#/settings#sync">Only in this browser: sync or back up</a>`);
   return html`<div class="deskfoot">${bits}</div>`;
 }
@@ -1792,8 +1796,13 @@ async function act(name, d) {
     }
     case "install-later": S.installDismissed = true; return render();
     case "sync-start": return goToGoogle(false);
-    case "sync-tap": return tokenGood() ? syncNow() : goToGoogle(true);
-    case "sync-now": return tokenGood() ? syncNow() : goToGoogle(true);
+    case "sync-tap":
+    case "sync-now": {
+      if (tokenGood()) return syncNow();
+      // a tap may show Google's account choice if renewing quietly didn't work a moment ago
+      const failedAt = (await store.getMeta("gdriveSilentFailedAt")) || 0;
+      return goToGoogle(Date.now() - failedAt > 600e3 && S.sync.state !== "choose");
+    }
     case "sync-stop": {
       await store.setMeta("gdrive", null);
       S.sync = { ...S.sync, rec: null, state: "off", last: null, error: null };
@@ -2266,7 +2275,7 @@ window.addEventListener("focus", () => {
   if (S.ready && S.helper.connected) guard(pullFromHelper());
 });
 
-export const APP_VERSION = "1.6.0";
+export const APP_VERSION = "1.6.1";
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   const hadController = !!navigator.serviceWorker.controller;
